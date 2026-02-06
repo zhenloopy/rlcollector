@@ -1,0 +1,183 @@
+:root {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: #0f0f0f;
+  background-color: #f6f6f6;
+}
+
+.app {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #e0e0e0;
+  padding-bottom: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.app-header nav button {
+  margin-left: 0.5rem;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid #ccc;
+  background: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.app-header nav button.active {
+  background: #0066cc;
+  color: #fff;
+  border-color: #0066cc;
+}
+
+.capture-controls {
+  background: #f0f0f0;
+  padding: 1rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+}
+
+.capture-controls h2 {
+  margin-top: 0;
+  font-size: 1rem;
+}
+
+.capture-controls .status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.indicator.active {
+  background: #22c55e;
+}
+
+.indicator.inactive {
+  background: #999;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.controls input[type="number"] {
+  width: 60px;
+  padding: 0.3rem;
+  margin-left: 0.5rem;
+}
+
+.controls button {
+  padding: 0.4rem 1rem;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  background: #0066cc;
+  color: #fff;
+}
+
+.controls button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.dashboard table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.dashboard th,
+.dashboard td {
+  text-align: left;
+  padding: 0.5rem;
+  border-bottom: 1px solid #eee;
+}
+
+.dashboard th {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.settings label {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.settings input {
+  display: block;
+  width: 100%;
+  max-width: 400px;
+  padding: 0.4rem;
+  margin-top: 0.25rem;
+}
+
+.settings button {
+  margin-top: 0.5rem;
+  padding: 0.4rem 1rem;
+  background: #0066cc;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.saved-msg {
+  margin-left: 0.5rem;
+  color: #22c55e;
+  font-size: 0.85rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #f6f6f6;
+    background-color: #1a1a1a;
+  }
+
+  .capture-controls {
+    background: #2a2a2a;
+  }
+
+  .app-header {
+    border-bottom-color: #444;
+  }
+
+  .app-header nav button {
+    background: #333;
+    color: #f6f6f6;
+    border-color: #555;
+  }
+
+  .app-header nav button.active {
+    background: #0066cc;
+    border-color: #0066cc;
+  }
+
+  .dashboard th {
+    color: #aaa;
+  }
+
+  .dashboard td {
+    border-bottom-color: #333;
+  }
+}
