@@ -27,6 +27,7 @@ pub fn run() {
         capturing: AtomicBool::new(false),
         capture_interval_ms: AtomicU64::new(30_000),
         capture_count: AtomicU64::new(0),
+        screenshots_dir: app_data_dir.join("screenshots"),
     });
 
     tauri::Builder::default()
@@ -42,6 +43,7 @@ pub fn run() {
             commands::delete_task,
             commands::get_setting,
             commands::update_setting,
+            commands::analyze_pending,
         ])
         .setup(|app| {
             tray::setup_tray(app.handle())?;

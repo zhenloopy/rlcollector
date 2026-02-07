@@ -45,3 +45,7 @@ export async function updateSetting(
 ): Promise<void> {
   return invoke("update_setting", { key, value });
 }
+
+export async function analyzePending(): Promise<void> {
+  return invoke("analyze_pending");
+}

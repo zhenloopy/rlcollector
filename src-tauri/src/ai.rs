@@ -17,21 +17,21 @@ pub enum AiError {
 }
 
 #[derive(Debug, Serialize)]
-struct ClaudeRequest {
-    model: String,
-    max_tokens: u32,
-    messages: Vec<Message>,
+pub(crate) struct ClaudeRequest {
+    pub(crate) model: String,
+    pub(crate) max_tokens: u32,
+    pub(crate) messages: Vec<Message>,
 }
 
 #[derive(Debug, Serialize)]
-struct Message {
-    role: String,
-    content: Vec<Content>,
+pub(crate) struct Message {
+    pub(crate) role: String,
+    pub(crate) content: Vec<Content>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
-enum Content {
+pub(crate) enum Content {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "image")]
@@ -39,21 +39,21 @@ enum Content {
 }
 
 #[derive(Debug, Serialize)]
-struct ImageSource {
+pub(crate) struct ImageSource {
     #[serde(rename = "type")]
-    source_type: String,
-    media_type: String,
-    data: String,
+    pub(crate) source_type: String,
+    pub(crate) media_type: String,
+    pub(crate) data: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct ClaudeResponse {
-    content: Vec<ResponseContent>,
+pub(crate) struct ClaudeResponse {
+    pub(crate) content: Vec<ResponseContent>,
 }
 
 #[derive(Debug, Deserialize)]
-struct ResponseContent {
-    text: Option<String>,
+pub(crate) struct ResponseContent {
+    pub(crate) text: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -156,5 +156,55 @@ mod tests {
         assert_eq!(analysis.task_title, "Writing code");
         assert_eq!(analysis.category, "coding");
         assert!(analysis.is_new_task);
+    }
+
+    #[test]
+    fn test_claude_request_serialization() {
+        let request = ClaudeRequest {
+            model: "claude-sonnet-4-5-20250929".to_string(),
+            max_tokens: 1024,
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: vec![
+                    Content::Image {
+                        source: ImageSource {
+                            source_type: "base64".to_string(),
+                            media_type: "image/png".to_string(),
+                            data: "dGVzdA==".to_string(),
+                        },
+                    },
+                    Content::Text {
+                        text: "Analyze this screenshot".to_string(),
+                    },
+                ],
+            }],
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["model"], "claude-sonnet-4-5-20250929");
+        assert_eq!(json["max_tokens"], 1024);
+        assert_eq!(json["messages"].as_array().unwrap().len(), 1);
+        let message = &json["messages"][0];
+        assert_eq!(message["role"], "user");
+        assert_eq!(message["content"].as_array().unwrap().len(), 2);
+        let image_content = &message["content"][0];
+        assert_eq!(image_content["type"], "image");
+        assert_eq!(image_content["source"]["type"], "base64");
+        assert_eq!(image_content["source"]["media_type"], "image/png");
+        let text_content = &message["content"][1];
+        assert_eq!(text_content["type"], "text");
+        assert_eq!(text_content["text"], "Analyze this screenshot");
+    }
+
+    #[test]
+    fn test_empty_response_handling() {
+        let empty_response = ClaudeResponse { content: vec![] };
+        let text = empty_response.content.first().and_then(|c| c.text.as_ref());
+        assert!(text.is_none(), "Empty response should have no text content");
+
+        let no_text_response = ClaudeResponse {
+            content: vec![ResponseContent { text: None }],
+        };
+        let text = no_text_response.content.first().and_then(|c| c.text.as_ref());
+        assert!(text.is_none(), "Response with None text should have no text content");
     }
 }

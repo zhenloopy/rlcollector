@@ -1,4 +1,4 @@
-use crate::models::{Task, TaskUpdate};
+use crate::models::{Screenshot, Task, TaskUpdate};
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::path::Path;
 use std::sync::Mutex;
@@ -73,6 +73,71 @@ impl Database {
         conn.execute(
             "INSERT INTO screenshots (filepath, captured_at, active_window_title, monitor_index) VALUES (?1, ?2, ?3, ?4)",
             params![filepath, captured_at, window_title, monitor],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Get the total number of screenshots in the database.
+    pub fn get_screenshot_count(&self) -> SqlResult<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM screenshots", [], |row| row.get(0))
+    }
+
+    /// Get a single screenshot by ID.
+    pub fn get_screenshot(&self, id: i64) -> SqlResult<Screenshot> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, filepath, captured_at, active_window_title, monitor_index FROM screenshots WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(Screenshot {
+                    id: row.get(0)?,
+                    filepath: row.get(1)?,
+                    captured_at: row.get(2)?,
+                    active_window_title: row.get(3)?,
+                    monitor_index: row.get(4)?,
+                })
+            },
+        )
+    }
+
+    /// Get screenshots that have not been linked to any task yet.
+    pub fn get_unanalyzed_screenshots(&self, limit: i64) -> SqlResult<Vec<Screenshot>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.filepath, s.captured_at, s.active_window_title, s.monitor_index
+             FROM screenshots s
+             LEFT JOIN task_screenshots ts ON s.id = ts.screenshot_id
+             WHERE ts.task_id IS NULL
+             ORDER BY s.captured_at ASC
+             LIMIT ?1",
+        )?;
+        let screenshots = stmt.query_map(params![limit], |row| {
+            Ok(Screenshot {
+                id: row.get(0)?,
+                filepath: row.get(1)?,
+                captured_at: row.get(2)?,
+                active_window_title: row.get(3)?,
+                monitor_index: row.get(4)?,
+            })
+        })?
+        .collect::<SqlResult<Vec<_>>>()?;
+        Ok(screenshots)
+    }
+
+    /// Insert a task with all AI-analyzed fields populated.
+    pub fn insert_full_task(
+        &self,
+        title: &str,
+        description: &str,
+        category: &str,
+        started_at: &str,
+        ai_reasoning: &str,
+    ) -> SqlResult<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO tasks (title, description, category, started_at, ai_reasoning) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![title, description, category, started_at, ai_reasoning],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -258,5 +323,67 @@ mod tests {
         assert_eq!(page2.len(), 2);
         let page3 = db.get_tasks(2, 4).unwrap();
         assert_eq!(page3.len(), 1);
+    }
+
+    #[test]
+    fn test_get_screenshot() {
+        let db = Database::in_memory().unwrap();
+        let id = db.insert_screenshot("test.webp", "2025-01-01T00:00:00", Some("Terminal"), 0).unwrap();
+        let screenshot = db.get_screenshot(id).unwrap();
+        assert_eq!(screenshot.filepath, "test.webp");
+        assert_eq!(screenshot.captured_at, "2025-01-01T00:00:00");
+        assert_eq!(screenshot.active_window_title, Some("Terminal".to_string()));
+        assert_eq!(screenshot.monitor_index, 0);
+    }
+
+    #[test]
+    fn test_get_unanalyzed_screenshots() {
+        let db = Database::in_memory().unwrap();
+        let ss1 = db.insert_screenshot("shot1.webp", "2025-01-01T00:00:00", None, 0).unwrap();
+        let _ss2 = db.insert_screenshot("shot2.webp", "2025-01-01T00:00:01", None, 0).unwrap();
+        let _ss3 = db.insert_screenshot("shot3.webp", "2025-01-01T00:00:02", None, 0).unwrap();
+
+        // Link ss1 to a task
+        let task_id = db.insert_task("Task", "2025-01-01T00:00:00").unwrap();
+        db.link_screenshot_to_task(task_id, ss1).unwrap();
+
+        // Only 2 unanalyzed screenshots should remain
+        let unanalyzed = db.get_unanalyzed_screenshots(10).unwrap();
+        assert_eq!(unanalyzed.len(), 2);
+        assert_eq!(unanalyzed[0].filepath, "shot2.webp");
+        assert_eq!(unanalyzed[1].filepath, "shot3.webp");
+    }
+
+    #[test]
+    fn test_insert_full_task() {
+        let db = Database::in_memory().unwrap();
+        let id = db.insert_full_task(
+            "Writing code",
+            "User is editing a Rust file",
+            "coding",
+            "2025-01-01T00:00:00",
+            "IDE is open with Rust code",
+        ).unwrap();
+        let task = db.get_task(id).unwrap();
+        assert_eq!(task.title, "Writing code");
+        assert_eq!(task.description, Some("User is editing a Rust file".to_string()));
+        assert_eq!(task.category, Some("coding".to_string()));
+        assert_eq!(task.ai_reasoning, Some("IDE is open with Rust code".to_string()));
+    }
+
+    #[test]
+    fn test_get_screenshot_count() {
+        let db = Database::in_memory().unwrap();
+
+        // Initially, count should be 0
+        assert_eq!(db.get_screenshot_count().unwrap(), 0);
+
+        // Insert 3 screenshots
+        db.insert_screenshot("shot1.webp", "2025-01-01T00:00:00", None, 0).unwrap();
+        db.insert_screenshot("shot2.webp", "2025-01-01T00:00:01", Some("Browser"), 0).unwrap();
+        db.insert_screenshot("shot3.webp", "2025-01-01T00:00:02", Some("Editor"), 1).unwrap();
+
+        // Count should be 3
+        assert_eq!(db.get_screenshot_count().unwrap(), 3);
     }
 }
