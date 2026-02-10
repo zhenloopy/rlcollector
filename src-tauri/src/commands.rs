@@ -156,7 +156,7 @@ pub fn start_capture(state: State<'_, Arc<AppState>>, interval_ms: Option<u64>, 
                             if count % 10 == 0 {
                                 let analysis_state = Arc::clone(&app_state);
                                 tauri::async_runtime::spawn(async move {
-                                    match run_pending_analysis(&analysis_state).await {
+                                    match run_pending_analysis(&analysis_state, 10).await {
                                         Ok(n) if n > 0 => info!("Auto-analyzed {} screenshots", n),
                                         Ok(_) => {}
                                         Err(e) => debug!("Auto-analysis skipped: {}", e),
@@ -309,7 +309,8 @@ pub fn get_screenshots_dir(state: State<'_, Arc<AppState>>) -> String {
 }
 
 /// Core analysis logic, callable from both the Tauri command and the background auto-analysis.
-async fn run_pending_analysis(state: &AppState) -> Result<u32, String> {
+/// `limit` caps how many screenshots to process (0 = all).
+async fn run_pending_analysis(state: &AppState, limit: i64) -> Result<u32, String> {
     let provider = state.db.get_setting("ai_provider")
         .map_err(|e| e.to_string())?
         .unwrap_or_else(|| "claude".to_string());
@@ -318,7 +319,8 @@ async fn run_pending_analysis(state: &AppState) -> Result<u32, String> {
         .map_err(|e| e.to_string())?
         .unwrap_or_else(|| "downscale".to_string());
 
-    let screenshots = state.db.get_unanalyzed_screenshots(10)
+    let fetch_limit = if limit > 0 { limit } else { i64::MAX };
+    let screenshots = state.db.get_unanalyzed_screenshots(fetch_limit)
         .map_err(|e| e.to_string())?;
 
     if screenshots.is_empty() {
@@ -420,7 +422,7 @@ async fn run_pending_analysis(state: &AppState) -> Result<u32, String> {
 
 #[tauri::command]
 pub async fn analyze_pending(state: State<'_, Arc<AppState>>) -> Result<u32, String> {
-    run_pending_analysis(&state).await
+    run_pending_analysis(&state, 0).await
 }
 
 #[tauri::command]

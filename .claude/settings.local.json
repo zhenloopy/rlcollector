@@ -39,7 +39,9 @@
       "WebFetch(domain:deepwiki.com)",
       "Bash(export PATH=\"$PATH:$HOME/.cargo/bin\")",
       "Bash(python3:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(git -C /home/zhenloopy/rlcollector config user.email \"matthewwilliams9259@gmail.com\")",
+      "Bash(git -C /home/zhenloopy/rlcollector config user.name \"zhenloopy\")"
     ]
   }
 }
