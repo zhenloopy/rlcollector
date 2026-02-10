@@ -1,11 +1,12 @@
 use crate::capture;
-use crate::models::{CaptureStatus, Task, TaskUpdate};
+use crate::models::{CaptureSession, CaptureStatus, Screenshot, Task, TaskUpdate};
 use crate::storage::Database;
+use log::{debug, error, info};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
-use tauri::State;
+use tauri::{Manager, State};
 
 pub struct AppState {
     pub db: Database,
@@ -13,6 +14,7 @@ pub struct AppState {
     pub capture_interval_ms: AtomicU64,
     pub capture_count: AtomicU64,
     pub screenshots_dir: PathBuf,
+    pub current_session_id: AtomicI64,
 }
 
 /// Format a SystemTime as an ISO 8601 string suitable for filenames.
@@ -90,21 +92,36 @@ pub fn start_capture(state: State<'_, Arc<AppState>>, interval_ms: Option<u64>) 
         return Ok(());
     }
 
+    let interval = interval_ms.unwrap_or_else(|| state.capture_interval_ms.load(Ordering::Relaxed));
+    info!("Starting capture with interval {}ms", interval);
+
     if let Some(ms) = interval_ms {
         state.capture_interval_ms.store(ms, Ordering::Relaxed);
     }
+
+    // Create a new capture session
+    let session_timestamp = format_timestamp_for_db(SystemTime::now());
+    let session_id = state.db.create_session(&session_timestamp)
+        .map_err(|e| format!("Failed to create capture session: {}", e))?;
+    state.current_session_id.store(session_id, Ordering::Relaxed);
+    info!("Created capture session {}", session_id);
+
     state.capturing.store(true, Ordering::Relaxed);
 
     // Ensure screenshots directory exists
     std::fs::create_dir_all(&state.screenshots_dir)
-        .map_err(|e| format!("Failed to create screenshots directory: {}", e))?;
+        .map_err(|e| {
+            error!("Failed to create screenshots directory: {}", e);
+            format!("Failed to create screenshots directory: {}", e)
+        })?;
 
     let app_state = Arc::clone(&state);
 
-    tokio::spawn(async move {
+    let capture_handle = tauri::async_runtime::spawn(async move {
         loop {
             // Check if we should stop
             if !app_state.capturing.load(Ordering::Relaxed) {
+                info!("Capture loop stopped");
                 break;
             }
 
@@ -116,22 +133,38 @@ pub fn start_capture(state: State<'_, Arc<AppState>>, interval_ms: Option<u64>) 
             match capture::capture_screen(&app_state.screenshots_dir, &filename) {
                 Ok(_filepath) => {
                     let relative_path = format!("screenshots/{}", filename);
+                    let sid = app_state.current_session_id.load(Ordering::Relaxed);
+                    let session_opt = if sid > 0 { Some(sid) } else { None };
                     match app_state.db.insert_screenshot(
                         &relative_path,
                         &db_timestamp,
                         None,
                         0,
+                        session_opt,
                     ) {
                         Ok(_) => {
-                            app_state.capture_count.fetch_add(1, Ordering::Relaxed);
+                            let count = app_state.capture_count.fetch_add(1, Ordering::Relaxed) + 1;
+                            debug!("Screenshot captured: {} (total: {})", filename, count);
+
+                            // Auto-analyze every 10 captures
+                            if count % 10 == 0 {
+                                let analysis_state = Arc::clone(&app_state);
+                                tauri::async_runtime::spawn(async move {
+                                    match run_pending_analysis(&analysis_state).await {
+                                        Ok(n) if n > 0 => info!("Auto-analyzed {} screenshots", n),
+                                        Ok(_) => {}
+                                        Err(e) => debug!("Auto-analysis skipped: {}", e),
+                                    }
+                                });
+                            }
                         }
                         Err(e) => {
-                            eprintln!("Failed to insert screenshot into DB: {}", e);
+                            error!("Failed to insert screenshot into DB: {}", e);
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Screenshot capture failed: {}", e);
+                    error!("Screenshot capture failed: {}", e);
                 }
             }
 
@@ -141,12 +174,31 @@ pub fn start_capture(state: State<'_, Arc<AppState>>, interval_ms: Option<u64>) 
         }
     });
 
+    // Monitor the capture task for panics
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = capture_handle.await {
+            error!("Capture task failed: {}", e);
+        }
+    });
+
     Ok(())
 }
 
 #[tauri::command]
 pub fn stop_capture(state: State<'_, Arc<AppState>>) {
+    info!("Stopping capture");
     state.capturing.store(false, Ordering::Relaxed);
+
+    // End the current capture session
+    let session_id = state.current_session_id.swap(0, Ordering::Relaxed);
+    if session_id > 0 {
+        let ended_at = format_timestamp_for_db(SystemTime::now());
+        if let Err(e) = state.db.end_session(session_id, &ended_at) {
+            error!("Failed to end capture session {}: {}", session_id, e);
+        } else {
+            info!("Ended capture session {}", session_id);
+        }
+    }
 }
 
 #[tauri::command]
@@ -195,7 +247,44 @@ pub fn update_setting(
 }
 
 #[tauri::command]
-pub async fn analyze_pending(state: State<'_, Arc<AppState>>) -> Result<u32, String> {
+pub fn get_log_path(app_handle: tauri::AppHandle) -> Result<String, String> {
+    let log_dir = app_handle
+        .path()
+        .app_log_dir()
+        .map_err(|e| format!("Failed to resolve log directory: {}", e))?;
+    Ok(log_dir.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn get_sessions(
+    state: State<'_, Arc<AppState>>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<CaptureSession>, String> {
+    state
+        .db
+        .get_sessions(limit.unwrap_or(50), offset.unwrap_or(0))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_session_screenshots(
+    state: State<'_, Arc<AppState>>,
+    session_id: i64,
+) -> Result<Vec<Screenshot>, String> {
+    state
+        .db
+        .get_session_screenshots(session_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_screenshots_dir(state: State<'_, Arc<AppState>>) -> String {
+    state.screenshots_dir.to_string_lossy().into_owned()
+}
+
+/// Core analysis logic, callable from both the Tauri command and the background auto-analysis.
+async fn run_pending_analysis(state: &AppState) -> Result<u32, String> {
     let api_key = state.db.get_setting("ai_api_key")
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "No API key configured".to_string())?;
@@ -207,16 +296,23 @@ pub async fn analyze_pending(state: State<'_, Arc<AppState>>) -> Result<u32, Str
         return Ok(0);
     }
 
+    info!("Analyzing {} pending screenshots", screenshots.len());
+
     let client = reqwest::Client::new();
     let mut processed = 0u32;
     let mut last_context: Option<String> = None;
 
     for screenshot in &screenshots {
-        let path = std::path::Path::new(&screenshot.filepath);
+        // Resolve the relative DB path against the screenshots directory
+        let filename = screenshot.filepath
+            .strip_prefix("screenshots/")
+            .unwrap_or(&screenshot.filepath);
+        let image_path = state.screenshots_dir.join(filename);
+
         match crate::ai::analyze_screenshot(
             &client,
             &api_key,
-            path,
+            &image_path,
             last_context.as_deref(),
         ).await {
             Ok(analysis) => {
@@ -231,7 +327,7 @@ pub async fn analyze_pending(state: State<'_, Arc<AppState>>) -> Result<u32, Str
                         Ok(task_id) => {
                             let _ = state.db.link_screenshot_to_task(task_id, screenshot.id);
                         }
-                        Err(e) => eprintln!("Failed to insert task: {}", e),
+                        Err(e) => error!("Failed to insert task: {}", e),
                     }
                 } else {
                     if let Ok(tasks) = state.db.get_tasks(1, 0) {
@@ -244,12 +340,18 @@ pub async fn analyze_pending(state: State<'_, Arc<AppState>>) -> Result<u32, Str
                 processed += 1;
             }
             Err(e) => {
-                eprintln!("AI analysis failed for screenshot {}: {}", screenshot.id, e);
+                error!("AI analysis failed for screenshot {}: {}", screenshot.id, e);
             }
         }
     }
 
+    info!("Analyzed {} screenshots", processed);
     Ok(processed)
+}
+
+#[tauri::command]
+pub async fn analyze_pending(state: State<'_, Arc<AppState>>) -> Result<u32, String> {
+    run_pending_analysis(&state).await
 }
 
 #[cfg(test)]

@@ -1,3 +1,4 @@
+use log::{error, info};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -31,12 +32,22 @@ pub fn save_image_as_webp(image: &RgbaImage, path: &Path) -> Result<(), CaptureE
 /// Capture the primary monitor and save as WebP to the given directory.
 /// Returns the filepath of the saved screenshot.
 pub fn capture_screen(output_dir: &Path, filename: &str) -> Result<PathBuf, CaptureError> {
-    let monitors = Monitor::all().map_err(|e| CaptureError::CaptureFailed(e.to_string()))?;
-    let monitor = monitors.first().ok_or(CaptureError::NoMonitors)?;
+    info!("Capturing screenshot: {}", filename);
+    let monitors = Monitor::all().map_err(|e| {
+        error!("Failed to enumerate monitors: {}", e);
+        CaptureError::CaptureFailed(e.to_string())
+    })?;
+    let monitor = monitors.first().ok_or_else(|| {
+        error!("No monitors found");
+        CaptureError::NoMonitors
+    })?;
 
     let image = monitor
         .capture_image()
-        .map_err(|e| CaptureError::CaptureFailed(e.to_string()))?;
+        .map_err(|e| {
+            error!("Monitor capture failed: {}", e);
+            CaptureError::CaptureFailed(e.to_string())
+        })?;
 
     let path = output_dir.join(filename);
     save_image_as_webp(&image, &path)?;

@@ -28,13 +28,14 @@ vi.mock('../../hooks/useTasks', () => ({
 // Mock tauri module - including getTask for TaskDetail rendering
 const mockGetTask = vi.fn();
 const mockUpdateTask = vi.fn();
+const mockAnalyzePending = vi.fn<() => Promise<number>>();
 
 vi.mock('../../lib/tauri', () => ({
   getTasks: vi.fn(),
   updateTask: (...args: unknown[]) => mockUpdateTask(...args),
   deleteTask: vi.fn(),
   getTask: (...args: unknown[]) => mockGetTask(...args),
-  analyzePending: vi.fn().mockResolvedValue(undefined),
+  analyzePending: (...args: unknown[]) => mockAnalyzePending(...(args as [])),
 }));
 
 const sampleTask: Task = {
@@ -66,6 +67,7 @@ describe('Dashboard', () => {
     vi.clearAllMocks();
     mockGetTask.mockResolvedValue(sampleTask);
     mockUpdateTask.mockResolvedValue(undefined);
+    mockAnalyzePending.mockResolvedValue(0);
   });
 
   it('renders loading state', () => {
@@ -229,5 +231,47 @@ describe('Dashboard', () => {
     });
     render(<Dashboard />);
     expect(screen.getByText('Next')).toBeDisabled();
+  });
+
+  it('shows success message after analyzing pending screenshots', async () => {
+    const user = userEvent.setup();
+    mockAnalyzePending.mockResolvedValue(3);
+    mockUseTasks.mockReturnValue({
+      tasks: [sampleTask],
+      loading: false,
+      remove: mockRemove,
+      update: mockUpdate,
+      refresh: mockRefresh,
+      page: 0,
+      hasMore: false,
+      nextPage: vi.fn(),
+      prevPage: vi.fn(),
+    });
+    render(<Dashboard />);
+    await user.click(screen.getByText('Analyze Pending'));
+    await waitFor(() => {
+      expect(screen.getByText('Analyzed 3 screenshots')).toBeInTheDocument();
+    });
+  });
+
+  it('shows error message when analysis fails', async () => {
+    const user = userEvent.setup();
+    mockAnalyzePending.mockRejectedValue(new Error('No API key configured'));
+    mockUseTasks.mockReturnValue({
+      tasks: [sampleTask],
+      loading: false,
+      remove: mockRemove,
+      update: mockUpdate,
+      refresh: mockRefresh,
+      page: 0,
+      hasMore: false,
+      nextPage: vi.fn(),
+      prevPage: vi.fn(),
+    });
+    render(<Dashboard />);
+    await user.click(screen.getByText('Analyze Pending'));
+    await waitFor(() => {
+      expect(screen.getByText('Error: No API key configured')).toBeInTheDocument();
+    });
   });
 });

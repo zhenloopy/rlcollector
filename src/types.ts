@@ -31,3 +31,10 @@ export interface CaptureStatus {
   interval_ms: number;
   count: number;
 }
+
+export interface CaptureSession {
+  id: number;
+  started_at: string;
+  ended_at: string | null;
+  screenshot_count: number;
+}

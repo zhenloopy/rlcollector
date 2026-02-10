@@ -31,8 +31,30 @@ function TaskRow({
 }
 
 export function Dashboard() {
-  const { tasks, loading, remove, page, hasMore, nextPage, prevPage } = useTasks();
+  const { tasks, loading, remove, refresh, page, hasMore, nextPage, prevPage } = useTasks();
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeMsg, setAnalyzeMsg] = useState<string | null>(null);
+
+  const handleAnalyze = async () => {
+    setAnalyzing(true);
+    setAnalyzeMsg(null);
+    try {
+      const count = await analyzePending();
+      setAnalyzeMsg(
+        count > 0 ? `Analyzed ${count} screenshot${count > 1 ? "s" : ""}` : "No pending screenshots"
+      );
+      if (count > 0) {
+        refresh(page);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setAnalyzeMsg(`Error: ${msg}`);
+    } finally {
+      setAnalyzing(false);
+      setTimeout(() => setAnalyzeMsg(null), 4000);
+    }
+  };
 
   if (selectedTaskId !== null) {
     return (
@@ -50,7 +72,19 @@ export function Dashboard() {
   if (tasks.length === 0 && page === 0) {
     return (
       <div className="dashboard">
-        <h2>Tasks</h2>
+        <div className="dashboard-header">
+          <h2>Tasks</h2>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <button className="analyze-button" onClick={handleAnalyze} disabled={analyzing}>
+              {analyzing ? "Analyzing..." : "Analyze Pending"}
+            </button>
+            {analyzeMsg && (
+              <span className={analyzeMsg.startsWith("Error") ? "analyze-error" : "saved-msg"}>
+                {analyzeMsg}
+              </span>
+            )}
+          </div>
+        </div>
         <p>No tasks recorded yet. Start capturing to begin.</p>
       </div>
     );
@@ -60,9 +94,16 @@ export function Dashboard() {
     <div className="dashboard">
       <div className="dashboard-header">
         <h2>Tasks</h2>
-        <button className="analyze-button" onClick={() => analyzePending()}>
-          Analyze Pending
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <button className="analyze-button" onClick={handleAnalyze} disabled={analyzing}>
+            {analyzing ? "Analyzing..." : "Analyze Pending"}
+          </button>
+          {analyzeMsg && (
+            <span className={analyzeMsg.startsWith("Error") ? "analyze-error" : "saved-msg"}>
+              {analyzeMsg}
+            </span>
+          )}
+        </div>
       </div>
       <table>
         <thead>

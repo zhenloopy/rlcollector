@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CaptureStatus, Task, TaskUpdate } from "../types";
+import type { CaptureSession, CaptureStatus, Screenshot, Task, TaskUpdate } from "../types";
 
 export async function startCapture(intervalMs?: number): Promise<void> {
   return invoke("start_capture", { intervalMs });
@@ -46,6 +46,27 @@ export async function updateSetting(
   return invoke("update_setting", { key, value });
 }
 
-export async function analyzePending(): Promise<void> {
+export async function analyzePending(): Promise<number> {
   return invoke("analyze_pending");
+}
+
+export async function getLogPath(): Promise<string> {
+  return invoke("get_log_path");
+}
+
+export async function getSessions(
+  limit?: number,
+  offset?: number
+): Promise<CaptureSession[]> {
+  return invoke("get_sessions", { limit, offset });
+}
+
+export async function getSessionScreenshots(
+  sessionId: number
+): Promise<Screenshot[]> {
+  return invoke("get_session_screenshots", { sessionId });
+}
+
+export async function getScreenshotsDir(): Promise<string> {
+  return invoke("get_screenshots_dir");
 }

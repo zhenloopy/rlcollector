@@ -6,8 +6,10 @@ mod storage;
 mod tray;
 
 use commands::AppState;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use log::info;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
 use std::sync::Arc;
+use tauri_plugin_log::{Target, TargetKind};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -15,12 +17,23 @@ pub fn run() {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("rlcollector");
 
-    std::fs::create_dir_all(&app_data_dir).expect("Failed to create app data directory");
-    std::fs::create_dir_all(app_data_dir.join("screenshots"))
-        .expect("Failed to create screenshots directory");
+    if let Err(e) = std::fs::create_dir_all(&app_data_dir) {
+        eprintln!("Failed to create app data directory: {}", e);
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(app_data_dir.join("screenshots")) {
+        eprintln!("Failed to create screenshots directory: {}", e);
+        return;
+    }
 
     let db_path = app_data_dir.join("rlcollector.db");
-    let db = storage::Database::new(&db_path).expect("Failed to open database");
+    let db = match storage::Database::new(&db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("Failed to open database: {}", e);
+            return;
+        }
+    };
 
     let state = Arc::new(AppState {
         db,
@@ -28,9 +41,19 @@ pub fn run() {
         capture_interval_ms: AtomicU64::new(30_000),
         capture_count: AtomicU64::new(0),
         screenshots_dir: app_data_dir.join("screenshots"),
+        current_session_id: AtomicI64::new(0),
     });
 
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir { file_name: None }),
+                ])
+                .level(log::LevelFilter::Debug)
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
@@ -44,8 +67,18 @@ pub fn run() {
             commands::get_setting,
             commands::update_setting,
             commands::analyze_pending,
+            commands::get_log_path,
+            commands::get_sessions,
+            commands::get_session_screenshots,
+            commands::get_screenshots_dir,
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            // Set panic hook here so the log plugin is already initialized
+            std::panic::set_hook(Box::new(|info| {
+                log::error!("PANIC: {}", info);
+            }));
+
+            info!("RLCollector started, data dir: {}", app_data_dir.display());
             tray::setup_tray(app.handle())?;
             Ok(())
         })

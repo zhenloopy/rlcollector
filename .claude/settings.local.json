@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo:*)",
+      "Bash(node --version:*)",
+      "Bash(npm:*)",
+      "Bash(pnpm --version:*)",
+      "Bash(rustc:*)",
+      "Bash(where:*)",
+      "Bash(export PATH=\"$HOME/.cargo/bin:$PATH\")",
+      "Bash(git add:*)",
+      "Bash(git restore:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd Tauri v2 app scaffold with React frontend and Rust backend\n\nCore structure: SQLite storage with full CRUD \\(tested\\), screen capture\nmodule \\(xcap\\), Claude API integration \\(typed but not wired\\), system\ntray, and React dashboard with capture controls and settings.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git branch:*)",
+      "Bash(git worktree:*)",
+      "Bash(git worktree add:*)",
+      "Bash(npx vitest run)",
+      "Bash(git commit:*)",
+      "Bash(where.exe:*)",
+      "Bash(export PATH=\"$PATH:$USERPROFILE/.cargo/bin\")",
+      "Bash(source:*)",
+      "WebFetch(domain:docs.anthropic.com)"
+    ]
+  }
+}

@@ -46,6 +46,14 @@ pub struct Settings {
     pub compress_to_webp: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureSession {
+    pub id: i64,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub screenshot_count: i64,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {

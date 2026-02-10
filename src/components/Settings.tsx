@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { getSetting, updateSetting } from "../lib/tauri";
+import { getSetting, updateSetting, getLogPath } from "../lib/tauri";
+import { openPath } from "@tauri-apps/plugin-opener";
 
 export function Settings() {
   const [apiKey, setApiKey] = useState("");
@@ -17,6 +18,11 @@ export function Settings() {
     setTimeout(() => setSaved(false), 2000);
   };
 
+  const openLogs = async () => {
+    const logDir = await getLogPath();
+    await openPath(logDir);
+  };
+
   return (
     <div className="settings">
       <h2>Settings</h2>
@@ -31,6 +37,8 @@ export function Settings() {
       </label>
       <button onClick={save}>Save</button>
       {saved && <span className="saved-msg">Saved</span>}
+      <hr />
+      <button onClick={openLogs}>Open Log Directory</button>
     </div>
   );
 }

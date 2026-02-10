@@ -1,4 +1,5 @@
 use base64::Engine;
+use log::{error, info};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -71,8 +72,12 @@ pub async fn analyze_screenshot(
     image_path: &Path,
     previous_context: Option<&str>,
 ) -> Result<TaskAnalysis, AiError> {
+    info!("Analyzing screenshot: {}", image_path.display());
     let image_bytes =
-        std::fs::read(image_path).map_err(|e| AiError::ImageReadFailed(e.to_string()))?;
+        std::fs::read(image_path).map_err(|e| {
+            error!("Failed to read image {}: {}", image_path.display(), e);
+            AiError::ImageReadFailed(e.to_string())
+        })?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&image_bytes);
 
     let media_type = if image_path.extension().is_some_and(|e| e == "png") {
@@ -123,6 +128,7 @@ pub async fn analyze_screenshot(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        error!("Claude API error {}: {}", status, body);
         return Err(AiError::ApiError(format!("{}: {}", status, body)));
     }
 
@@ -133,8 +139,28 @@ pub async fn analyze_screenshot(
         .and_then(|c| c.text.as_ref())
         .ok_or_else(|| AiError::ApiError("Empty response".to_string()))?;
 
+    info!("Raw AI response text: {}", text);
+
+    // Strip markdown code fences if present (e.g. ```json ... ```)
+    let cleaned = text.trim();
+    let cleaned = if cleaned.starts_with("```") {
+        let stripped = cleaned
+            .strip_prefix("```json")
+            .or_else(|| cleaned.strip_prefix("```"))
+            .unwrap_or(cleaned);
+        stripped
+            .strip_suffix("```")
+            .unwrap_or(stripped)
+            .trim()
+    } else {
+        cleaned
+    };
+
     let analysis: TaskAnalysis =
-        serde_json::from_str(text).map_err(|e| AiError::ApiError(format!("Parse error: {}", e)))?;
+        serde_json::from_str(cleaned).map_err(|e| {
+            error!("Failed to parse AI response: {} — raw text: {}", e, cleaned);
+            AiError::ApiError(format!("Parse error: {}", e))
+        })?;
 
     Ok(analysis)
 }

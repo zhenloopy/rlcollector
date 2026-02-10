@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useCapture } from "../hooks/useCapture";
 
 export function CaptureControls() {
-  const { status, start, stop, loading } = useCapture();
+  const { status, start, stop, loading, error } = useCapture();
   const [intervalSec, setIntervalSec] = useState(
     Math.round(status.interval_ms / 1000)
   );
@@ -15,6 +15,7 @@ export function CaptureControls() {
         <span>{status.active ? "Recording" : "Stopped"}</span>
         {status.active && <span> — {status.count} captures</span>}
       </div>
+      {error && <div className="error-msg">{error}</div>}
       <div className="controls">
         <label>
           Interval (seconds):

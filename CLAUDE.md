@@ -85,9 +85,12 @@ CREATE TABLE settings (
 - `delete_task(id)`
 - `analyze_pending()` — trigger AI analysis on unprocessed screenshots
 - `get_settings()` / `update_settings(key, value)`
+- `get_log_path()` → `String` — returns the platform-specific log directory path
 
 ## Key Crates
 - `tauri` v2 — app framework
+- `tauri-plugin-log` — file + stdout logging (writes to LogDir)
+- `log` — logging facade
 - `xcap` — cross-platform screen capture
 - `rusqlite` with `bundled` feature — SQLite
 - `reqwest` — HTTP client for Claude API
@@ -98,10 +101,34 @@ CREATE TABLE settings (
 
 ## Build & Run
 ```bash
+source env.sh        # load dev environment (adds cargo to PATH) — required before build/test
 npm install          # install frontend deps
 npm run tauri dev    # dev mode with hot reload
 npm run tauri build  # production build
 ```
+
+**Important:** After any code change (Rust or frontend), you must rebuild with `npm run tauri build` before running the executable. `npm run tauri dev` handles this automatically with hot reload.
+
+**Important (Claude):** Always run `source env.sh` before any `cargo` or `npm run tauri` commands. The shell does not have cargo in PATH by default.
+
+## File Locations
+
+### Executables (after `npm run tauri build`)
+- **Windows**: `src-tauri/target/release/rlcollector.exe`
+- **macOS**: `src-tauri/target/release/bundle/macos/RLCollector.app`
+- **Linux**: `src-tauri/target/release/rlcollector`
+
+### Logs (`tauri-plugin-log`, written to disk on each line)
+- **Windows**: `%LOCALAPPDATA%\com.rlmarket.rlcollector\logs\`
+- **macOS**: `~/Library/Logs/com.rlmarket.rlcollector/`
+- **Linux**: `~/.config/com.rlmarket.rlcollector/logs/`
+
+The Settings page has an "Open Log Directory" button. Logs persist across crashes.
+
+### App Data (screenshots + SQLite DB)
+- **Windows**: `%APPDATA%\rlcollector\`
+- **macOS**: `~/Library/Application Support/rlcollector/`
+- **Linux**: `~/.local/share/rlcollector/`
 
 ## Testing Strategy
 
@@ -147,3 +174,13 @@ npm run tauri build  # production build
 - Compress screenshots to WebP before saving (smaller, fast)
 - Configurable capture interval: 1s minimum, 5min maximum, default 30s
 - AI calls are batched and async — never block the capture loop
+
+## Gotchas
+- **Tauri v2 sync commands don't run on the Tokio runtime** — `tokio::spawn` panics with "no reactor running". Use `tauri::async_runtime::spawn` instead.
+- **tauri-plugin-log writes to `%LOCALAPPDATA%`** not `%APPDATA%` on Windows. Use `app_handle.path().app_log_dir()` to get the correct path; don't hardcode with `dirs_next`.
+- **`catch_unwind` on async**: wrapping future *creation* doesn't catch panics during *execution*. Use tokio's `JoinHandle` error (via `.await`) instead.
+- xcap v0.0.14 is pinned (newer versions have different API)
+- Cargo.toml lib name is `rlcollector_lib`, referenced in main.rs
+
+## Note to Claude
+After any major functionality or architecture change, update this file. Keep it simple — focus on: how the app is built/deployed, how it's tested, and where major features live. Don't let these docs go stale.

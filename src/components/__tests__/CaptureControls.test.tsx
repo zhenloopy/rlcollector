@@ -13,6 +13,7 @@ const mockUseCapture = vi.fn<() => {
   start: (intervalMs?: number) => Promise<void>;
   stop: () => Promise<void>;
   loading: boolean;
+  error: string | null;
   refresh: () => Promise<void>;
 }>();
 
@@ -31,6 +32,7 @@ describe('CaptureControls', () => {
       start: mockStart,
       stop: mockStop,
       loading: false,
+      error: null,
       refresh: mockRefresh,
     });
     render(<CaptureControls />);
@@ -43,6 +45,7 @@ describe('CaptureControls', () => {
       start: mockStart,
       stop: mockStop,
       loading: false,
+      error: null,
       refresh: mockRefresh,
     });
     render(<CaptureControls />);
@@ -55,6 +58,7 @@ describe('CaptureControls', () => {
       start: mockStart,
       stop: mockStop,
       loading: false,
+      error: null,
       refresh: mockRefresh,
     });
     render(<CaptureControls />);
@@ -67,6 +71,7 @@ describe('CaptureControls', () => {
       start: mockStart,
       stop: mockStop,
       loading: false,
+      error: null,
       refresh: mockRefresh,
     });
     render(<CaptureControls />);
@@ -80,6 +85,7 @@ describe('CaptureControls', () => {
       start: mockStart,
       stop: mockStop,
       loading: false,
+      error: null,
       refresh: mockRefresh,
     });
     render(<CaptureControls />);
@@ -94,6 +100,7 @@ describe('CaptureControls', () => {
       start: mockStart,
       stop: mockStop,
       loading: false,
+      error: null,
       refresh: mockRefresh,
     });
     render(<CaptureControls />);
@@ -107,9 +114,23 @@ describe('CaptureControls', () => {
       start: mockStart,
       stop: mockStop,
       loading: false,
+      error: null,
       refresh: mockRefresh,
     });
     render(<CaptureControls />);
     expect(screen.getByText(/42 captures/)).toBeInTheDocument();
+  });
+
+  it('displays error message when error is set', () => {
+    mockUseCapture.mockReturnValue({
+      status: { active: false, interval_ms: 30000, count: 0 },
+      start: mockStart,
+      stop: mockStop,
+      loading: false,
+      error: 'Failed to create screenshots directory',
+      refresh: mockRefresh,
+    });
+    render(<CaptureControls />);
+    expect(screen.getByText('Failed to create screenshots directory')).toBeInTheDocument();
   });
 });
