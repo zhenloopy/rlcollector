@@ -204,6 +204,51 @@
   font-size: 0.85rem;
 }
 
+.provider-selector {
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.provider-selector legend {
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 0 0.25rem;
+}
+
+.radio-label {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 0.3rem;
+  margin-right: 1.5rem;
+  cursor: pointer;
+}
+
+.radio-label input[type="radio"] {
+  display: inline !important;
+  width: auto !important;
+  margin: 0;
+}
+
+.provider-config {
+  margin-bottom: 1rem;
+}
+
+.ollama-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.check-button {
+  padding: 0.2rem 0.6rem !important;
+  font-size: 0.8rem;
+  margin-top: 0 !important;
+}
+
 .analyze-error {
   margin-left: 0.5rem;
   color: #ef4444;
@@ -519,6 +564,10 @@
   .popup-cancel {
     background: #333;
     color: #f6f6f6;
+    border-color: #555;
+  }
+
+  .provider-selector {
     border-color: #555;
   }
 

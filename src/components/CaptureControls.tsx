@@ -6,6 +6,7 @@ export function CaptureControls() {
   const [intervalSec, setIntervalSec] = useState(
     Math.round(status.interval_ms / 1000)
   );
+  const [description, setDescription] = useState("");
 
   return (
     <div className="capture-controls">
@@ -17,6 +18,16 @@ export function CaptureControls() {
       </div>
       {error && <div className="error-msg">{error}</div>}
       <div className="controls">
+        <label>
+          What are you working on?
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="e.g. Building the auth page for my React app"
+            disabled={status.active}
+            rows={2}
+          />
+        </label>
         <label>
           Interval (seconds):
           <input
@@ -33,7 +44,10 @@ export function CaptureControls() {
             Stop Capture
           </button>
         ) : (
-          <button onClick={() => start(intervalSec * 1000)} disabled={loading}>
+          <button
+            onClick={() => start(intervalSec * 1000, description || undefined)}
+            disabled={loading}
+          >
             Start Capture
           </button>
         )}

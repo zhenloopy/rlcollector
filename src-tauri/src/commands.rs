@@ -1,5 +1,6 @@
 use crate::capture;
-use crate::models::{CaptureSession, CaptureStatus, Screenshot, Task, TaskUpdate};
+use crate::models::{CaptureSession, CaptureStatus, OllamaStatus, Screenshot, Task, TaskUpdate};
+use crate::ollama_sidecar::{self, OllamaProcess};
 use crate::storage::Database;
 use log::{debug, error, info};
 use std::path::PathBuf;
@@ -15,6 +16,10 @@ pub struct AppState {
     pub capture_count: AtomicU64,
     pub screenshots_dir: PathBuf,
     pub current_session_id: AtomicI64,
+    pub app_data_dir: PathBuf,
+    pub ollama_process: OllamaProcess,
+    pub analyzing: AtomicBool,
+    pub cancel_analysis: AtomicBool,
 }
 
 /// Format a SystemTime as an ISO 8601 string suitable for filenames.
@@ -86,7 +91,7 @@ pub fn get_capture_status(state: State<'_, Arc<AppState>>) -> CaptureStatus {
 }
 
 #[tauri::command]
-pub fn start_capture(state: State<'_, Arc<AppState>>, interval_ms: Option<u64>) -> Result<(), String> {
+pub fn start_capture(state: State<'_, Arc<AppState>>, interval_ms: Option<u64>, description: Option<String>) -> Result<(), String> {
     // Guard against spawning multiple capture loops
     if state.capturing.load(Ordering::Relaxed) {
         return Ok(());
@@ -101,7 +106,8 @@ pub fn start_capture(state: State<'_, Arc<AppState>>, interval_ms: Option<u64>) 
 
     // Create a new capture session
     let session_timestamp = format_timestamp_for_db(SystemTime::now());
-    let session_id = state.db.create_session(&session_timestamp)
+    let desc_ref = description.as_deref().filter(|s| !s.trim().is_empty());
+    let session_id = state.db.create_session(&session_timestamp, desc_ref)
         .map_err(|e| format!("Failed to create capture session: {}", e))?;
     state.current_session_id.store(session_id, Ordering::Relaxed);
     info!("Created capture session {}", session_id);
@@ -202,6 +208,25 @@ pub fn stop_capture(state: State<'_, Arc<AppState>>) {
 }
 
 #[tauri::command]
+pub fn get_current_session(state: State<'_, Arc<AppState>>) -> Result<Option<CaptureSession>, String> {
+    let session_id = state.current_session_id.load(Ordering::Relaxed);
+    if session_id <= 0 {
+        return Ok(None);
+    }
+    match state.db.get_session(session_id) {
+        Ok(session) => Ok(Some(session)),
+        Err(e) => {
+            // QueryReturnedNoRows means session doesn't exist
+            if e.to_string().contains("Query returned no rows") {
+                Ok(None)
+            } else {
+                Err(e.to_string())
+            }
+        }
+    }
+}
+
+#[tauri::command]
 pub fn get_tasks(
     state: State<'_, Arc<AppState>>,
     limit: Option<i64>,
@@ -285,9 +310,13 @@ pub fn get_screenshots_dir(state: State<'_, Arc<AppState>>) -> String {
 
 /// Core analysis logic, callable from both the Tauri command and the background auto-analysis.
 async fn run_pending_analysis(state: &AppState) -> Result<u32, String> {
-    let api_key = state.db.get_setting("ai_api_key")
+    let provider = state.db.get_setting("ai_provider")
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "No API key configured".to_string())?;
+        .unwrap_or_else(|| "claude".to_string());
+
+    let image_mode = state.db.get_setting("image_mode")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "downscale".to_string());
 
     let screenshots = state.db.get_unanalyzed_screenshots(10)
         .map_err(|e| e.to_string())?;
@@ -296,25 +325,64 @@ async fn run_pending_analysis(state: &AppState) -> Result<u32, String> {
         return Ok(0);
     }
 
-    info!("Analyzing {} pending screenshots", screenshots.len());
+    // Look up session description from the first screenshot's session
+    let session_description: Option<String> = screenshots.first()
+        .and_then(|ss| {
+            state.db.get_screenshot_session_id(ss.id).ok().flatten()
+        })
+        .and_then(|sid| {
+            state.db.get_session(sid).ok()
+        })
+        .and_then(|session| session.description);
+
+    info!("Analyzing {} pending screenshots with provider: {}, image_mode: {}, session_desc: {:?}",
+        screenshots.len(), provider, image_mode, session_description);
+
+    state.analyzing.store(true, Ordering::Relaxed);
+    state.cancel_analysis.store(false, Ordering::Relaxed);
 
     let client = reqwest::Client::new();
     let mut processed = 0u32;
     let mut last_context: Option<String> = None;
 
     for screenshot in &screenshots {
+        if state.cancel_analysis.load(Ordering::Relaxed) {
+            info!("Analysis cancelled by user after {} screenshots", processed);
+            break;
+        }
         // Resolve the relative DB path against the screenshots directory
         let filename = screenshot.filepath
             .strip_prefix("screenshots/")
             .unwrap_or(&screenshot.filepath);
         let image_path = state.screenshots_dir.join(filename);
 
-        match crate::ai::analyze_screenshot(
-            &client,
-            &api_key,
-            &image_path,
-            last_context.as_deref(),
-        ).await {
+        let result = if provider == "ollama" {
+            let model = state.db.get_setting("ollama_model")
+                .map_err(|e| e.to_string())?
+                .unwrap_or_else(|| "qwen3-vl:8b".to_string());
+            crate::ai::analyze_screenshot_ollama(
+                &client,
+                &model,
+                &image_path,
+                last_context.as_deref(),
+                session_description.as_deref(),
+                &image_mode,
+            ).await
+        } else {
+            let api_key = state.db.get_setting("ai_api_key")
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "No API key configured".to_string())?;
+            crate::ai::analyze_screenshot(
+                &client,
+                &api_key,
+                &image_path,
+                last_context.as_deref(),
+                session_description.as_deref(),
+                &image_mode,
+            ).await
+        };
+
+        match result {
             Ok(analysis) => {
                 if analysis.is_new_task {
                     match state.db.insert_full_task(
@@ -345,6 +413,7 @@ async fn run_pending_analysis(state: &AppState) -> Result<u32, String> {
         }
     }
 
+    state.analyzing.store(false, Ordering::Relaxed);
     info!("Analyzed {} screenshots", processed);
     Ok(processed)
 }
@@ -352,6 +421,118 @@ async fn run_pending_analysis(state: &AppState) -> Result<u32, String> {
 #[tauri::command]
 pub async fn analyze_pending(state: State<'_, Arc<AppState>>) -> Result<u32, String> {
     run_pending_analysis(&state).await
+}
+
+#[tauri::command]
+pub fn cancel_analysis(state: State<'_, Arc<AppState>>) {
+    info!("Cancelling analysis");
+    state.cancel_analysis.store(true, Ordering::Relaxed);
+}
+
+#[tauri::command]
+pub fn clear_pending(state: State<'_, Arc<AppState>>) -> Result<u32, String> {
+    let paths = state.db.delete_unanalyzed_screenshots()
+        .map_err(|e| e.to_string())?;
+    let count = paths.len() as u32;
+
+    // Remove files from disk
+    for rel_path in &paths {
+        let filename = rel_path
+            .strip_prefix("screenshots/")
+            .unwrap_or(rel_path);
+        let full_path = state.screenshots_dir.join(filename);
+        if let Err(e) = std::fs::remove_file(&full_path) {
+            debug!("Could not remove file {}: {}", full_path.display(), e);
+        }
+    }
+
+    info!("Cleared {} pending screenshots", count);
+    Ok(count)
+}
+
+#[tauri::command]
+pub async fn check_ollama(state: State<'_, Arc<AppState>>) -> Result<OllamaStatus, String> {
+    let client = reqwest::Client::new();
+    match crate::ai::check_ollama_connection(&client).await {
+        Ok(models) => {
+            let source = if state.ollama_process.is_managed() {
+                "bundled".to_string()
+            } else {
+                "external".to_string()
+            };
+            Ok(OllamaStatus {
+                available: true,
+                models,
+                source,
+            })
+        }
+        Err(_) => Ok(OllamaStatus {
+            available: false,
+            models: vec![],
+            source: String::new(),
+        }),
+    }
+}
+
+#[tauri::command]
+pub async fn ensure_ollama(state: State<'_, Arc<AppState>>) -> Result<OllamaStatus, String> {
+    let client = reqwest::Client::new();
+
+    // 1. Check if Ollama is already running externally
+    if let Ok(models) = crate::ai::check_ollama_connection(&client).await {
+        info!("Ollama already running externally");
+        return Ok(OllamaStatus {
+            available: true,
+            models,
+            source: "external".to_string(),
+        });
+    }
+
+    // 2. Find the binary
+    let binary_path = OllamaProcess::find_binary(&state.app_data_dir)
+        .ok_or_else(|| "Ollama binary not found. Place it in the app data directory or install it on your system PATH.".to_string())?;
+
+    // 3. Start the process
+    state.ollama_process.start(&binary_path)?;
+
+    // 4. Wait for it to become ready (20 attempts * 500ms = 10s)
+    ollama_sidecar::wait_for_ready(&client, 20).await?;
+
+    // 5. Get model list
+    let models = crate::ai::check_ollama_connection(&client)
+        .await
+        .map_err(|e| format!("Ollama started but failed to connect: {}", e))?;
+
+    info!("Ollama started successfully from {}", binary_path.display());
+    Ok(OllamaStatus {
+        available: true,
+        models,
+        source: "bundled".to_string(),
+    })
+}
+
+#[tauri::command]
+pub async fn ollama_pull(model: String) -> Result<(), String> {
+    info!("Pulling Ollama model: {}", model);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .post("http://localhost:11434/api/pull")
+        .json(&serde_json::json!({ "name": model, "stream": false }))
+        .send()
+        .await
+        .map_err(|e| format!("Pull request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Pull failed: {}", body));
+    }
+
+    info!("Successfully pulled model: {}", model);
+    Ok(())
 }
 
 #[cfg(test)]

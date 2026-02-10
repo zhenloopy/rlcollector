@@ -1,8 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CaptureSession, CaptureStatus, Screenshot, Task, TaskUpdate } from "../types";
+import type { CaptureSession, CaptureStatus, OllamaStatus, Screenshot, Task, TaskUpdate } from "../types";
 
-export async function startCapture(intervalMs?: number): Promise<void> {
-  return invoke("start_capture", { intervalMs });
+export async function startCapture(intervalMs?: number, description?: string): Promise<void> {
+  return invoke("start_capture", { intervalMs, description });
+}
+
+export async function getCurrentSession(): Promise<CaptureSession | null> {
+  return invoke("get_current_session");
 }
 
 export async function stopCapture(): Promise<void> {
@@ -50,6 +54,14 @@ export async function analyzePending(): Promise<number> {
   return invoke("analyze_pending");
 }
 
+export async function cancelAnalysis(): Promise<void> {
+  return invoke("cancel_analysis");
+}
+
+export async function clearPending(): Promise<number> {
+  return invoke("clear_pending");
+}
+
 export async function getLogPath(): Promise<string> {
   return invoke("get_log_path");
 }
@@ -69,4 +81,16 @@ export async function getSessionScreenshots(
 
 export async function getScreenshotsDir(): Promise<string> {
   return invoke("get_screenshots_dir");
+}
+
+export async function checkOllama(): Promise<OllamaStatus> {
+  return invoke("check_ollama");
+}
+
+export async function ensureOllama(): Promise<OllamaStatus> {
+  return invoke("ensure_ollama");
+}
+
+export async function ollamaPull(model: string): Promise<void> {
+  return invoke("ollama_pull", { model });
 }

@@ -27,11 +27,11 @@ export function useCapture() {
   }, [refresh]);
 
   const start = useCallback(
-    async (intervalMs?: number) => {
+    async (intervalMs?: number, description?: string) => {
       setLoading(true);
       setError(null);
       try {
-        await startCapture(intervalMs);
+        await startCapture(intervalMs, description);
         await refresh();
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

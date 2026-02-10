@@ -1,10 +1,11 @@
-use log::{error, info};
+use log::{error, info, warn};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use xcap::Monitor;
 use image::RgbaImage;
 use image::codecs::webp::WebPEncoder;
+use image::imageops::FilterType;
 
 #[derive(Error, Debug)]
 pub enum CaptureError {
@@ -53,6 +54,102 @@ pub fn capture_screen(output_dir: &Path, filename: &str) -> Result<PathBuf, Capt
     save_image_as_webp(&image, &path)?;
 
     Ok(path)
+}
+
+/// Downscale an image so its width is at most `max_width` pixels,
+/// preserving aspect ratio. Returns the original image if already small enough.
+pub fn resize_for_analysis(image: &RgbaImage, max_width: u32) -> RgbaImage {
+    let (w, h) = image.dimensions();
+    if w <= max_width {
+        return image.clone();
+    }
+    let new_height = (h as f64 * max_width as f64 / w as f64).round() as u32;
+    image::imageops::resize(image, max_width, new_height, FilterType::Triangle)
+}
+
+/// Attempt to crop to the active window on Linux using xdotool.
+/// Falls back to the full image on failure or non-Linux platforms.
+pub fn crop_active_window(image: &RgbaImage) -> RgbaImage {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(cropped) = crop_active_window_linux(image) {
+            return cropped;
+        }
+    }
+    let _ = image; // suppress unused warning on non-linux
+    image.clone()
+}
+
+#[cfg(target_os = "linux")]
+fn crop_active_window_linux(image: &RgbaImage) -> Option<RgbaImage> {
+    use std::process::Command;
+
+    // Get the active window ID
+    let window_id_output = Command::new("xdotool")
+        .args(["getactivewindow"])
+        .output()
+        .ok()?;
+    if !window_id_output.status.success() {
+        warn!("xdotool getactivewindow failed");
+        return None;
+    }
+    let window_id = String::from_utf8_lossy(&window_id_output.stdout).trim().to_string();
+
+    // Get window geometry
+    let geom_output = Command::new("xdotool")
+        .args(["getwindowgeometry", "--shell", &window_id])
+        .output()
+        .ok()?;
+    if !geom_output.status.success() {
+        warn!("xdotool getwindowgeometry failed");
+        return None;
+    }
+    let geom_str = String::from_utf8_lossy(&geom_output.stdout);
+
+    // Parse: X=123\nY=456\nWIDTH=789\nHEIGHT=012
+    let mut x: u32 = 0;
+    let mut y: u32 = 0;
+    let mut width: u32 = 0;
+    let mut height: u32 = 0;
+    for line in geom_str.lines() {
+        if let Some(val) = line.strip_prefix("X=") {
+            x = val.parse().unwrap_or(0);
+        } else if let Some(val) = line.strip_prefix("Y=") {
+            y = val.parse().unwrap_or(0);
+        } else if let Some(val) = line.strip_prefix("WIDTH=") {
+            width = val.parse().unwrap_or(0);
+        } else if let Some(val) = line.strip_prefix("HEIGHT=") {
+            height = val.parse().unwrap_or(0);
+        }
+    }
+
+    if width == 0 || height == 0 {
+        warn!("xdotool returned zero-size window");
+        return None;
+    }
+
+    let (img_w, img_h) = image.dimensions();
+    // Clamp to image bounds
+    let x = x.min(img_w.saturating_sub(1));
+    let y = y.min(img_h.saturating_sub(1));
+    let width = width.min(img_w - x);
+    let height = height.min(img_h - y);
+
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    Some(image::imageops::crop_imm(image, x, y, width, height).to_image())
+}
+
+/// Encode an RgbaImage as WebP bytes in memory.
+pub fn encode_webp_bytes(image: &RgbaImage) -> Result<Vec<u8>, CaptureError> {
+    let mut buf = Cursor::new(Vec::new());
+    let encoder = WebPEncoder::new_lossless(&mut buf);
+    image
+        .write_with_encoder(encoder)
+        .map_err(|e| CaptureError::SaveFailed(e.to_string()))?;
+    Ok(buf.into_inner())
 }
 
 #[cfg(test)]
@@ -109,5 +206,37 @@ mod tests {
         // Cleanup
         let _ = std::fs::remove_file(&output_path);
         let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
+    fn test_resize_for_analysis_already_small() {
+        let image = RgbaImage::from_raw(100, 50, vec![128u8; 100 * 50 * 4]).unwrap();
+        let resized = resize_for_analysis(&image, 1280);
+        assert_eq!(resized.dimensions(), (100, 50));
+    }
+
+    #[test]
+    fn test_resize_for_analysis_downscales() {
+        let image = RgbaImage::from_raw(2560, 1440, vec![128u8; 2560 * 1440 * 4]).unwrap();
+        let resized = resize_for_analysis(&image, 1280);
+        assert_eq!(resized.width(), 1280);
+        assert_eq!(resized.height(), 720);
+    }
+
+    #[test]
+    fn test_crop_active_window_fallback() {
+        // On non-Linux or without xdotool, should return full image
+        let image = RgbaImage::from_raw(100, 50, vec![128u8; 100 * 50 * 4]).unwrap();
+        let cropped = crop_active_window(&image);
+        assert_eq!(cropped.dimensions(), (100, 50));
+    }
+
+    #[test]
+    fn test_encode_webp_bytes() {
+        let image = RgbaImage::from_raw(10, 10, vec![128u8; 10 * 10 * 4]).unwrap();
+        let bytes = encode_webp_bytes(&image).unwrap();
+        assert!(bytes.len() >= 12);
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WEBP");
     }
 }

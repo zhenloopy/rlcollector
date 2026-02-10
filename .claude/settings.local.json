@@ -19,7 +19,27 @@
       "Bash(where.exe:*)",
       "Bash(export PATH=\"$PATH:$USERPROFILE/.cargo/bin\")",
       "Bash(source:*)",
-      "WebFetch(domain:docs.anthropic.com)"
+      "WebFetch(domain:docs.anthropic.com)",
+      "Bash(git -C /home/zhenloopy/rlcollector log --oneline -20)",
+      "Bash(wc:*)",
+      "Bash(git -C /home/zhenloopy/rlcollector log --oneline -20 --pretty=format:\"%h %s \\(%ar\\)\")",
+      "Bash(git -C /home/zhenloopy/rlcollector diff --stat da630ad...8692f00)",
+      "WebSearch",
+      "Bash(curl:*)",
+      "Bash(sh:*)",
+      "Bash(. \"$HOME/.cargo/env\")",
+      "Bash(dpkg:*)",
+      "Bash(dpkg-query:*)",
+      "Bash(export PATH=\"$HOME/.cargo/bin:$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH\")",
+      "WebFetch(domain:ollama.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(gh api:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:docs.ollama.com)",
+      "WebFetch(domain:deepwiki.com)",
+      "Bash(export PATH=\"$PATH:$HOME/.cargo/bin\")",
+      "Bash(python3:*)",
+      "Bash(npx tsc:*)"
     ]
   }
 }

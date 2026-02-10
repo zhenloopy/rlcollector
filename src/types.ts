@@ -37,4 +37,11 @@ export interface CaptureSession {
   started_at: string;
   ended_at: string | null;
   screenshot_count: number;
+  description: string | null;
+}
+
+export interface OllamaStatus {
+  available: boolean;
+  models: string[];
+  source: string;
 }

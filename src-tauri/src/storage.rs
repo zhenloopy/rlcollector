@@ -95,6 +95,19 @@ impl Database {
             )?;
         }
 
+        // Migrate: add description column to capture_sessions if it doesn't exist
+        let has_description: bool = {
+            let mut stmt = conn.prepare("PRAGMA table_info(capture_sessions)")?;
+            let columns = stmt.query_map([], |row| row.get::<_, String>(1))?
+                .collect::<SqlResult<Vec<_>>>()?;
+            columns.iter().any(|c| c == "description")
+        };
+        if !has_description {
+            conn.execute_batch(
+                "ALTER TABLE capture_sessions ADD COLUMN description TEXT;"
+            )?;
+        }
+
         Ok(())
     }
 
@@ -129,6 +142,28 @@ impl Database {
                 })
             },
         )
+    }
+
+    /// Delete all screenshots that have not been linked to any task.
+    /// Returns the filepaths of deleted rows so the caller can remove files from disk.
+    pub fn delete_unanalyzed_screenshots(&self) -> SqlResult<Vec<String>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT s.filepath FROM screenshots s
+             LEFT JOIN task_screenshots ts ON s.id = ts.screenshot_id
+             WHERE ts.task_id IS NULL",
+        )?;
+        let paths = stmt.query_map([], |row| row.get::<_, String>(0))?
+            .collect::<SqlResult<Vec<_>>>()?;
+        conn.execute(
+            "DELETE FROM screenshots WHERE id IN (
+                SELECT s.id FROM screenshots s
+                LEFT JOIN task_screenshots ts ON s.id = ts.screenshot_id
+                WHERE ts.task_id IS NULL
+            )",
+            [],
+        )?;
+        Ok(paths)
     }
 
     /// Get screenshots that have not been linked to any task yet.
@@ -258,11 +293,11 @@ impl Database {
         Ok(())
     }
 
-    pub fn create_session(&self, started_at: &str) -> SqlResult<i64> {
+    pub fn create_session(&self, started_at: &str, description: Option<&str>) -> SqlResult<i64> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO capture_sessions (started_at) VALUES (?1)",
-            params![started_at],
+            "INSERT INTO capture_sessions (started_at, description) VALUES (?1, ?2)",
+            params![started_at, description],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -280,7 +315,8 @@ impl Database {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT cs.id, cs.started_at, cs.ended_at,
-                    (SELECT COUNT(*) FROM screenshots s WHERE s.session_id = cs.id) as screenshot_count
+                    (SELECT COUNT(*) FROM screenshots s WHERE s.session_id = cs.id) as screenshot_count,
+                    cs.description
              FROM capture_sessions cs
              ORDER BY cs.started_at DESC
              LIMIT ?1 OFFSET ?2",
@@ -291,10 +327,42 @@ impl Database {
                 started_at: row.get(1)?,
                 ended_at: row.get(2)?,
                 screenshot_count: row.get(3)?,
+                description: row.get(4)?,
             })
         })?
         .collect::<SqlResult<Vec<_>>>()?;
         Ok(sessions)
+    }
+
+    pub fn get_session(&self, id: i64) -> SqlResult<CaptureSession> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT cs.id, cs.started_at, cs.ended_at,
+                    (SELECT COUNT(*) FROM screenshots s WHERE s.session_id = cs.id) as screenshot_count,
+                    cs.description
+             FROM capture_sessions cs
+             WHERE cs.id = ?1",
+            params![id],
+            |row| {
+                Ok(CaptureSession {
+                    id: row.get(0)?,
+                    started_at: row.get(1)?,
+                    ended_at: row.get(2)?,
+                    screenshot_count: row.get(3)?,
+                    description: row.get(4)?,
+                })
+            },
+        )
+    }
+
+    /// Get the session_id for a given screenshot, if any.
+    pub fn get_screenshot_session_id(&self, screenshot_id: i64) -> SqlResult<Option<i64>> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT session_id FROM screenshots WHERE id = ?1",
+            params![screenshot_id],
+            |row| row.get(0),
+        )
     }
 
     pub fn get_session_screenshots(&self, session_id: i64) -> SqlResult<Vec<Screenshot>> {
@@ -402,6 +470,29 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_unanalyzed_screenshots() {
+        let db = Database::in_memory().unwrap();
+        let ss1 = db.insert_screenshot("shot1.webp", "2025-01-01T00:00:00", None, 0, None).unwrap();
+        let _ss2 = db.insert_screenshot("shot2.webp", "2025-01-01T00:00:01", None, 0, None).unwrap();
+        let ss3 = db.insert_screenshot("shot3.webp", "2025-01-01T00:00:02", None, 0, None).unwrap();
+
+        // Link ss1 to a task — it should NOT be deleted
+        let task_id = db.insert_task("Task", "2025-01-01T00:00:00").unwrap();
+        db.link_screenshot_to_task(task_id, ss1).unwrap();
+
+        // Link ss3 to a task too
+        db.link_screenshot_to_task(task_id, ss3).unwrap();
+
+        // Only ss2 is unanalyzed
+        let deleted = db.delete_unanalyzed_screenshots().unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0], "shot2.webp");
+
+        // Verify only 2 screenshots remain
+        assert_eq!(db.get_screenshot_count().unwrap(), 2);
+    }
+
+    #[test]
     fn test_get_tasks_pagination() {
         let db = Database::in_memory().unwrap();
         for i in 0..5 {
@@ -480,7 +571,7 @@ mod tests {
     #[test]
     fn test_create_and_end_session() {
         let db = Database::in_memory().unwrap();
-        let id = db.create_session("2025-01-01T10:00:00").unwrap();
+        let id = db.create_session("2025-01-01T10:00:00", None).unwrap();
         assert!(id > 0);
 
         db.end_session(id, "2025-01-01T10:30:00").unwrap();
@@ -496,7 +587,7 @@ mod tests {
     #[test]
     fn test_session_screenshot_count() {
         let db = Database::in_memory().unwrap();
-        let session_id = db.create_session("2025-01-01T10:00:00").unwrap();
+        let session_id = db.create_session("2025-01-01T10:00:00", None).unwrap();
 
         db.insert_screenshot("s1.webp", "2025-01-01T10:00:00", None, 0, Some(session_id)).unwrap();
         db.insert_screenshot("s2.webp", "2025-01-01T10:00:30", None, 0, Some(session_id)).unwrap();
@@ -509,7 +600,7 @@ mod tests {
     #[test]
     fn test_get_session_screenshots() {
         let db = Database::in_memory().unwrap();
-        let session_id = db.create_session("2025-01-01T10:00:00").unwrap();
+        let session_id = db.create_session("2025-01-01T10:00:00", None).unwrap();
 
         db.insert_screenshot("s1.webp", "2025-01-01T10:00:00", None, 0, Some(session_id)).unwrap();
         db.insert_screenshot("s2.webp", "2025-01-01T10:00:30", Some("Editor"), 0, Some(session_id)).unwrap();
@@ -522,10 +613,34 @@ mod tests {
     }
 
     #[test]
+    fn test_session_description() {
+        let db = Database::in_memory().unwrap();
+        let id = db.create_session("2025-01-01T10:00:00", Some("Building a React form")).unwrap();
+        let session = db.get_session(id).unwrap();
+        assert_eq!(session.description, Some("Building a React form".to_string()));
+
+        // Session without description
+        let id2 = db.create_session("2025-01-01T11:00:00", None).unwrap();
+        let session2 = db.get_session(id2).unwrap();
+        assert_eq!(session2.description, None);
+    }
+
+    #[test]
+    fn test_get_screenshot_session_id() {
+        let db = Database::in_memory().unwrap();
+        let session_id = db.create_session("2025-01-01T10:00:00", None).unwrap();
+        let ss_id = db.insert_screenshot("s1.webp", "2025-01-01T10:00:00", None, 0, Some(session_id)).unwrap();
+        let ss_no_session = db.insert_screenshot("s2.webp", "2025-01-01T10:00:01", None, 0, None).unwrap();
+
+        assert_eq!(db.get_screenshot_session_id(ss_id).unwrap(), Some(session_id));
+        assert_eq!(db.get_screenshot_session_id(ss_no_session).unwrap(), None);
+    }
+
+    #[test]
     fn test_get_sessions_pagination() {
         let db = Database::in_memory().unwrap();
         for i in 0..5 {
-            db.create_session(&format!("2025-01-0{}T10:00:00", i + 1)).unwrap();
+            db.create_session(&format!("2025-01-0{}T10:00:00", i + 1), None).unwrap();
         }
         let page1 = db.get_sessions(2, 0).unwrap();
         assert_eq!(page1.len(), 2);

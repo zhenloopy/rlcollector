@@ -52,6 +52,14 @@ pub struct CaptureSession {
     pub started_at: String,
     pub ended_at: Option<String>,
     pub screenshot_count: i64,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaStatus {
+    pub available: bool,
+    pub models: Vec<String>,
+    pub source: String,
 }
 
 impl Default for Settings {

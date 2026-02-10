@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTasks } from "../hooks/useTasks";
-import { analyzePending } from "../lib/tauri";
+import { analyzePending, cancelAnalysis, clearPending } from "../lib/tauri";
 import { TaskDetail } from "./TaskDetail";
 import type { Task } from "../types";
 
@@ -34,9 +34,14 @@ export function Dashboard() {
   const { tasks, loading, remove, refresh, page, hasMore, nextPage, prevPage } = useTasks();
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [analyzeMsg, setAnalyzeMsg] = useState<string | null>(null);
 
-  const handleAnalyze = async () => {
+  const handleAnalyzeToggle = async () => {
+    if (analyzing) {
+      await cancelAnalysis();
+      return;
+    }
     setAnalyzing(true);
     setAnalyzeMsg(null);
     try {
@@ -52,6 +57,23 @@ export function Dashboard() {
       setAnalyzeMsg(`Error: ${msg}`);
     } finally {
       setAnalyzing(false);
+      setTimeout(() => setAnalyzeMsg(null), 4000);
+    }
+  };
+
+  const handleClearPending = async () => {
+    setClearing(true);
+    setAnalyzeMsg(null);
+    try {
+      const count = await clearPending();
+      setAnalyzeMsg(
+        count > 0 ? `Cleared ${count} pending screenshot${count > 1 ? "s" : ""}` : "No pending screenshots"
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setAnalyzeMsg(`Error: ${msg}`);
+    } finally {
+      setClearing(false);
       setTimeout(() => setAnalyzeMsg(null), 4000);
     }
   };
@@ -75,8 +97,11 @@ export function Dashboard() {
         <div className="dashboard-header">
           <h2>Tasks</h2>
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <button className="analyze-button" onClick={handleAnalyze} disabled={analyzing}>
-              {analyzing ? "Analyzing..." : "Analyze Pending"}
+            <button className="analyze-button" onClick={handleAnalyzeToggle} disabled={clearing}>
+              {analyzing ? "Cancel Analysis" : "Analyze Pending"}
+            </button>
+            <button onClick={handleClearPending} disabled={clearing || analyzing}>
+              {clearing ? "Clearing..." : "Clear Pending"}
             </button>
             {analyzeMsg && (
               <span className={analyzeMsg.startsWith("Error") ? "analyze-error" : "saved-msg"}>
@@ -95,8 +120,11 @@ export function Dashboard() {
       <div className="dashboard-header">
         <h2>Tasks</h2>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-          <button className="analyze-button" onClick={handleAnalyze} disabled={analyzing}>
-            {analyzing ? "Analyzing..." : "Analyze Pending"}
+          <button className="analyze-button" onClick={handleAnalyzeToggle} disabled={clearing}>
+            {analyzing ? "Cancel Analysis" : "Analyze Pending"}
+          </button>
+          <button onClick={handleClearPending} disabled={clearing || analyzing}>
+            {clearing ? "Clearing..." : "Clear Pending"}
           </button>
           {analyzeMsg && (
             <span className={analyzeMsg.startsWith("Error") ? "analyze-error" : "saved-msg"}>
