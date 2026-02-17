@@ -1,108 +1,199 @@
 import { useState } from "react";
-import { useTasks } from "../hooks/useTasks";
-import { analyzePending, cancelAnalysis, clearPending } from "../lib/tauri";
-import { TaskDetail } from "./TaskDetail";
-import type { Task } from "../types";
+import { useSessions } from "../hooks/useSessions";
+import { analyzeSession, analyzeAllPending, cancelAnalysis, deleteSession } from "../lib/tauri";
+import { CollectionDetail } from "./CollectionDetail";
+import type { CaptureSession } from "../types";
 
-function TaskRow({
-  task,
+function SessionCard({
+  session,
+  analyzing,
+  onAnalyze,
   onDelete,
-  onClick,
 }: {
-  task: Task;
+  session: CaptureSession;
+  analyzing: boolean;
+  onAnalyze: (id: number) => void;
   onDelete: (id: number) => void;
-  onClick: (id: number) => void;
 }) {
+  const started = new Date(session.started_at).toLocaleString();
+  const analyzed = session.screenshot_count - session.unanalyzed_count;
+
   return (
-    <tr>
-      <td>
-        <span className="task-link" onClick={() => onClick(task.id)} style={{ cursor: "pointer" }}>
-          {task.title}
-        </span>
-      </td>
-      <td>{task.category ?? "\u2014"}</td>
-      <td>{new Date(task.started_at).toLocaleString()}</td>
-      <td>{task.user_verified ? "Yes" : "No"}</td>
-      <td>
-        <button onClick={() => onDelete(task.id)}>Delete</button>
-      </td>
-    </tr>
+    <div className="session-card">
+      <div className="session-card-info">
+        <h3>{session.title || "Untitled Session"}</h3>
+        {session.description && (
+          <p className="session-description">{session.description}</p>
+        )}
+        <div className="session-meta">
+          <span>{started}</span>
+          <span>{session.screenshot_count} screenshots</span>
+          {analyzing ? (
+            <span>{analyzed}/{session.screenshot_count} analyzed</span>
+          ) : (
+            <span>{session.unanalyzed_count} unanalyzed</span>
+          )}
+        </div>
+      </div>
+      <div className="session-card-actions">
+        <button
+          className="analyze-button"
+          onClick={() => onAnalyze(session.id)}
+          disabled={analyzing}
+        >
+          {analyzing ? <><span className="spinner" /> Analyzing...</> : "Analyze"}
+        </button>
+        <button
+          className="delete-button"
+          onClick={() => onDelete(session.id)}
+          disabled={analyzing}
+        >
+          Delete
+        </button>
+      </div>
+    </div>
   );
 }
 
-export function Dashboard() {
-  const { tasks, loading, remove, refresh, page, hasMore, nextPage, prevPage } = useTasks();
-  const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [clearing, setClearing] = useState(false);
-  const [analyzeMsg, setAnalyzeMsg] = useState<string | null>(null);
+function CompletedSessionCard({
+  session,
+  onClick,
+  onDelete,
+}: {
+  session: CaptureSession;
+  onClick: (id: number) => void;
+  onDelete: (id: number) => void;
+}) {
+  const started = new Date(session.started_at).toLocaleString();
 
-  const handleAnalyzeToggle = async () => {
-    if (analyzing) {
-      await cancelAnalysis();
-      return;
-    }
-    setAnalyzing(true);
+  return (
+    <div className="session-card clickable" onClick={() => onClick(session.id)}>
+      <div className="session-card-info">
+        <h3>{session.title || "Untitled Session"}</h3>
+        {session.description && (
+          <p className="session-description">{session.description}</p>
+        )}
+        <div className="session-meta">
+          <span>{started}</span>
+          <span>{session.screenshot_count} screenshots</span>
+        </div>
+      </div>
+      <div className="session-card-actions">
+        <button
+          className="delete-button"
+          onClick={(e) => { e.stopPropagation(); onDelete(session.id); }}
+        >
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function Dashboard({ refreshTrigger }: { refreshTrigger?: number }) {
+  const {
+    pending,
+    completed,
+    loading,
+    refresh,
+    completedPage,
+    hasMoreCompleted,
+    nextCompletedPage,
+    prevCompletedPage,
+    analyzingSessionId: backendAnalyzingId,
+  } = useSessions(refreshTrigger);
+  const [userAnalyzeAll, setUserAnalyzeAll] = useState(false);
+  const [analyzeMsg, setAnalyzeMsg] = useState<string | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
+
+  const isAnalyzing = backendAnalyzingId !== null || userAnalyzeAll;
+
+  const handleAnalyzeSession = async (sessionId: number) => {
     setAnalyzeMsg(null);
     try {
-      const count = await analyzePending();
+      const count = await analyzeSession(sessionId);
       setAnalyzeMsg(
         count > 0 ? `Analyzed ${count} screenshot${count > 1 ? "s" : ""}` : "No pending screenshots"
       );
-      if (count > 0) {
-        refresh(page);
-      }
+      refresh(completedPage);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setAnalyzeMsg(`Error: ${msg}`);
     } finally {
-      setAnalyzing(false);
       setTimeout(() => setAnalyzeMsg(null), 4000);
     }
   };
 
-  const handleClearPending = async () => {
-    setClearing(true);
+  const handleAnalyzeAll = async () => {
+    setUserAnalyzeAll(true);
     setAnalyzeMsg(null);
     try {
-      const count = await clearPending();
+      const count = await analyzeAllPending();
       setAnalyzeMsg(
-        count > 0 ? `Cleared ${count} pending screenshot${count > 1 ? "s" : ""}` : "No pending screenshots"
+        count > 0 ? `Analyzed ${count} screenshot${count > 1 ? "s" : ""}` : "No pending screenshots"
       );
+      refresh(completedPage);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setAnalyzeMsg(`Error: ${msg}`);
     } finally {
-      setClearing(false);
+      setUserAnalyzeAll(false);
       setTimeout(() => setAnalyzeMsg(null), 4000);
     }
   };
 
-  if (selectedTaskId !== null) {
+  const handleCancelAnalysis = async () => {
+    await cancelAnalysis();
+  };
+
+  const handleDeleteSession = async (sessionId: number) => {
+    try {
+      await deleteSession(sessionId);
+      refresh(completedPage);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setAnalyzeMsg(`Error: ${msg}`);
+      setTimeout(() => setAnalyzeMsg(null), 4000);
+    }
+  };
+
+  if (selectedSessionId !== null) {
     return (
-      <TaskDetail
-        taskId={selectedTaskId}
-        onClose={() => setSelectedTaskId(null)}
+      <CollectionDetail
+        sessionId={selectedSessionId}
+        onClose={() => {
+          setSelectedSessionId(null);
+          refresh(completedPage);
+        }}
+        backLabel="Back to Sessions"
       />
     );
   }
 
   if (loading) {
-    return <div>Loading tasks...</div>;
+    return <div>Loading sessions...</div>;
   }
 
-  if (tasks.length === 0 && page === 0) {
-    return (
-      <div className="dashboard">
+  return (
+    <div className="dashboard">
+      {/* Pending Sessions */}
+      <div className="dashboard-section">
         <div className="dashboard-header">
-          <h2>Tasks</h2>
+          <h2>Pending Sessions</h2>
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <button className="analyze-button" onClick={handleAnalyzeToggle} disabled={clearing}>
-              {analyzing ? "Cancel Analysis" : "Analyze Pending"}
-            </button>
-            <button onClick={handleClearPending} disabled={clearing || analyzing}>
-              {clearing ? "Clearing..." : "Clear Pending"}
-            </button>
+            {pending.length > 0 && (
+              <button
+                className="analyze-button"
+                onClick={isAnalyzing ? handleCancelAnalysis : handleAnalyzeAll}
+                disabled={false}
+              >
+                {isAnalyzing ? (
+                  <><span className="spinner" /> Cancel</>
+                ) : (
+                  "Analyze All"
+                )}
+              </button>
+            )}
             {analyzeMsg && (
               <span className={analyzeMsg.startsWith("Error") ? "analyze-error" : "saved-msg"}>
                 {analyzeMsg}
@@ -110,58 +201,53 @@ export function Dashboard() {
             )}
           </div>
         </div>
-        <p>No tasks recorded yet. Start capturing to begin.</p>
+        {pending.length === 0 ? (
+          <p>No pending sessions. Start a capture to create one.</p>
+        ) : (
+          <div className="session-cards">
+            {pending.map((session) => (
+              <SessionCard
+                key={session.id}
+                session={session}
+                analyzing={
+                  backendAnalyzingId === session.id || userAnalyzeAll
+                }
+                onAnalyze={handleAnalyzeSession}
+                onDelete={handleDeleteSession}
+              />
+            ))}
+          </div>
+        )}
       </div>
-    );
-  }
 
-  return (
-    <div className="dashboard">
-      <div className="dashboard-header">
-        <h2>Tasks</h2>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-          <button className="analyze-button" onClick={handleAnalyzeToggle} disabled={clearing}>
-            {analyzing ? "Cancel Analysis" : "Analyze Pending"}
-          </button>
-          <button onClick={handleClearPending} disabled={clearing || analyzing}>
-            {clearing ? "Clearing..." : "Clear Pending"}
-          </button>
-          {analyzeMsg && (
-            <span className={analyzeMsg.startsWith("Error") ? "analyze-error" : "saved-msg"}>
-              {analyzeMsg}
-            </span>
-          )}
-        </div>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Title</th>
-            <th>Category</th>
-            <th>Started</th>
-            <th>Verified</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {tasks.map((task) => (
-            <TaskRow
-              key={task.id}
-              task={task}
-              onDelete={remove}
-              onClick={setSelectedTaskId}
-            />
-          ))}
-        </tbody>
-      </table>
-      <div className="pagination">
-        <button onClick={prevPage} disabled={page === 0}>
-          Previous
-        </button>
-        <span>Page {page + 1}</span>
-        <button onClick={nextPage} disabled={!hasMore}>
-          Next
-        </button>
+      {/* Completed Sessions */}
+      <div className="dashboard-section">
+        <h2>Completed Sessions</h2>
+        {completed.length === 0 ? (
+          <p>No completed sessions yet.</p>
+        ) : (
+          <>
+            <div className="session-cards">
+              {completed.map((session) => (
+                <CompletedSessionCard
+                  key={session.id}
+                  session={session}
+                  onClick={setSelectedSessionId}
+                  onDelete={handleDeleteSession}
+                />
+              ))}
+            </div>
+            <div className="pagination">
+              <button onClick={prevCompletedPage} disabled={completedPage === 0}>
+                Previous
+              </button>
+              <span>Page {completedPage + 1}</span>
+              <button onClick={nextCompletedPage} disabled={!hasMoreCompleted}>
+                Next
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

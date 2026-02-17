@@ -7,6 +7,18 @@ pub struct Screenshot {
     pub captured_at: String,
     pub active_window_title: Option<String>,
     pub monitor_index: i32,
+    pub capture_group: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorInfo {
+    pub id: u32,
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub is_primary: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +39,8 @@ pub struct CaptureStatus {
     pub active: bool,
     pub interval_ms: u64,
     pub count: u64,
+    pub monitor_mode: String,
+    pub monitors_captured: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,20 +53,14 @@ pub struct TaskUpdate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Settings {
-    pub capture_interval_ms: u64,
-    pub ai_api_key: Option<String>,
-    pub screenshots_dir: String,
-    pub compress_to_webp: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureSession {
     pub id: i64,
     pub started_at: String,
     pub ended_at: Option<String>,
     pub screenshot_count: i64,
     pub description: Option<String>,
+    pub title: Option<String>,
+    pub unanalyzed_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,13 +70,8 @@ pub struct OllamaStatus {
     pub source: String,
 }
 
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            capture_interval_ms: 30_000,
-            ai_api_key: None,
-            screenshots_dir: String::from("screenshots"),
-            compress_to_webp: true,
-        }
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalysisStatus {
+    pub analyzing: bool,
+    pub session_id: Option<i64>,
 }

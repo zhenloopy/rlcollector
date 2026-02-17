@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useCapture } from "../hooks/useCapture";
 
-export function CaptureControls() {
+export function CaptureControls({ onStop }: { onStop?: () => void }) {
   const { status, start, stop, loading, error } = useCapture();
   const [intervalSec, setIntervalSec] = useState(
     Math.round(status.interval_ms / 1000)
   );
+  const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
 
   return (
@@ -18,6 +19,16 @@ export function CaptureControls() {
       </div>
       {error && <div className="error-msg">{error}</div>}
       <div className="controls">
+        <label>
+          Session title
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="e.g. Auth page implementation"
+            disabled={status.active}
+          />
+        </label>
         <label>
           What are you working on?
           <textarea
@@ -40,13 +51,13 @@ export function CaptureControls() {
           />
         </label>
         {status.active ? (
-          <button onClick={stop} disabled={loading}>
+          <button onClick={async () => { await stop(); onStop?.(); }} disabled={loading}>
             Stop Capture
           </button>
         ) : (
           <button
-            onClick={() => start(intervalSec * 1000, description || undefined)}
-            disabled={loading}
+            onClick={() => start(intervalSec * 1000, title || undefined, description || undefined)}
+            disabled={loading || !title.trim()}
           >
             Start Capture
           </button>

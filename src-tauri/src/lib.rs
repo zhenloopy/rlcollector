@@ -8,8 +8,9 @@ mod tray;
 
 use commands::AppState;
 use log::info;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri_plugin_log::{Target, TargetKind};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -46,7 +47,9 @@ pub fn run() {
         app_data_dir: app_data_dir.clone(),
         ollama_process: ollama_sidecar::OllamaProcess::new(),
         analyzing: AtomicBool::new(false),
+        analyzing_session_id: AtomicI64::new(0),
         cancel_analysis: AtomicBool::new(false),
+        monitor_states: Mutex::new(HashMap::new()),
     });
 
     let app = tauri::Builder::default()
@@ -73,12 +76,22 @@ pub fn run() {
             commands::get_setting,
             commands::update_setting,
             commands::analyze_pending,
+            commands::analyze_session,
+            commands::analyze_all_pending,
+            commands::delete_session,
+            commands::get_analysis_status,
             commands::cancel_analysis,
             commands::clear_pending,
+            commands::get_pending_sessions,
+            commands::get_completed_sessions,
             commands::get_log_path,
             commands::get_sessions,
             commands::get_session_screenshots,
+            commands::get_session_tasks,
+            commands::get_task_for_screenshot,
             commands::get_screenshots_dir,
+            commands::get_monitors,
+            commands::highlight_monitors,
             commands::check_ollama,
             commands::ensure_ollama,
             commands::ollama_pull,
@@ -91,6 +104,7 @@ pub fn run() {
 
             info!("RLCollector started, data dir: {}", app_data_dir.display());
             tray::setup_tray(app.handle())?;
+
             Ok(())
         })
         .build(tauri::generate_context!())

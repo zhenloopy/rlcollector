@@ -2,276 +2,258 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Dashboard } from '../Dashboard';
-import type { Task } from '../../types';
+import type { CaptureSession } from '../../types';
 
-// Mock useTasks hook
-const mockRemove = vi.fn();
-const mockUpdate = vi.fn();
+// Mock useSessions hook
 const mockRefresh = vi.fn();
+const mockNextCompletedPage = vi.fn();
+const mockPrevCompletedPage = vi.fn();
 
-const mockUseTasks = vi.fn<() => {
-  tasks: Task[];
+const mockUseSessions = vi.fn<() => {
+  pending: CaptureSession[];
+  completed: CaptureSession[];
   loading: boolean;
-  remove: (id: number) => Promise<void>;
-  update: (id: number, fields: Record<string, unknown>) => Promise<void>;
-  refresh: () => Promise<void>;
-  page: number;
-  hasMore: boolean;
-  nextPage: () => void;
-  prevPage: () => void;
+  refresh: (page?: number) => Promise<void>;
+  completedPage: number;
+  hasMoreCompleted: boolean;
+  nextCompletedPage: () => void;
+  prevCompletedPage: () => void;
+  analyzingSessionId: number | null;
 }>();
 
-vi.mock('../../hooks/useTasks', () => ({
-  useTasks: (...args: unknown[]) => mockUseTasks(...args),
+vi.mock('../../hooks/useSessions', () => ({
+  useSessions: (...args: unknown[]) => mockUseSessions(...args),
 }));
 
-// Mock tauri module - including getTask for TaskDetail rendering
-const mockGetTask = vi.fn();
-const mockUpdateTask = vi.fn();
-const mockAnalyzePending = vi.fn<() => Promise<number>>();
+// Mock tauri module
+const mockAnalyzeSession = vi.fn<(sessionId: number) => Promise<number>>();
+const mockAnalyzeAllPending = vi.fn<() => Promise<number>>();
 
 vi.mock('../../lib/tauri', () => ({
-  getTasks: vi.fn(),
-  updateTask: (...args: unknown[]) => mockUpdateTask(...args),
-  deleteTask: vi.fn(),
-  getTask: (...args: unknown[]) => mockGetTask(...args),
-  analyzePending: (...args: unknown[]) => mockAnalyzePending(...(args as [])),
+  analyzeSession: (...args: unknown[]) => mockAnalyzeSession(...(args as [number])),
+  analyzeAllPending: (...args: unknown[]) => mockAnalyzeAllPending(...(args as [])),
+  cancelAnalysis: vi.fn(),
+  deleteSession: vi.fn().mockResolvedValue(0),
+  getSessionScreenshots: vi.fn().mockResolvedValue([]),
+  getScreenshotsDir: vi.fn().mockResolvedValue('/tmp'),
 }));
 
-const sampleTask: Task = {
+// Mock CollectionDetail
+vi.mock('../CollectionDetail', () => ({
+  CollectionDetail: ({
+    onClose,
+    backLabel,
+  }: {
+    sessionId: number;
+    onClose: () => void;
+    backLabel?: string;
+  }) => (
+    <div data-testid="collection-detail">
+      <button onClick={onClose}>{backLabel || 'Back to Sessions'}</button>
+    </div>
+  ),
+}));
+
+const pendingSession: CaptureSession = {
   id: 1,
-  title: 'Test Task',
-  description: 'A test task description',
-  category: 'coding',
   started_at: '2025-01-01T10:00:00Z',
-  ended_at: null,
-  ai_reasoning: null,
-  user_verified: false,
-  metadata: null,
+  ended_at: '2025-01-01T10:30:00Z',
+  screenshot_count: 5,
+  description: 'Working on auth',
+  title: 'Auth Feature',
+  unanalyzed_count: 3,
 };
 
-const sampleTask2: Task = {
+const completedSession: CaptureSession = {
   id: 2,
-  title: 'Another Task',
-  description: null,
-  category: 'browsing',
   started_at: '2025-01-01T11:00:00Z',
-  ended_at: '2025-01-01T12:00:00Z',
-  ai_reasoning: 'AI detected browsing activity',
-  user_verified: true,
-  metadata: null,
+  ended_at: '2025-01-01T11:30:00Z',
+  screenshot_count: 10,
+  description: 'Finished testing',
+  title: 'Testing Sprint',
+  unanalyzed_count: 0,
 };
 
 describe('Dashboard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetTask.mockResolvedValue(sampleTask);
-    mockUpdateTask.mockResolvedValue(undefined);
-    mockAnalyzePending.mockResolvedValue(0);
+    mockAnalyzeSession.mockResolvedValue(0);
+    mockAnalyzeAllPending.mockResolvedValue(0);
   });
 
   it('renders loading state', () => {
-    mockUseTasks.mockReturnValue({
-      tasks: [],
+    mockUseSessions.mockReturnValue({
+      pending: [],
+      completed: [],
       loading: true,
-      remove: mockRemove,
-      update: mockUpdate,
       refresh: mockRefresh,
-      page: 0,
-      hasMore: false,
-      nextPage: vi.fn(),
-      prevPage: vi.fn(),
+      completedPage: 0,
+      hasMoreCompleted: false,
+      nextCompletedPage: mockNextCompletedPage,
+      prevCompletedPage: mockPrevCompletedPage,
+      analyzingSessionId: null,
     });
     render(<Dashboard />);
-    expect(screen.getByText('Loading tasks...')).toBeInTheDocument();
+    expect(screen.getByText('Loading sessions...')).toBeInTheDocument();
   });
 
-  it('renders "No tasks" message when task list is empty', () => {
-    mockUseTasks.mockReturnValue({
-      tasks: [],
+  it('renders empty state when no sessions', () => {
+    mockUseSessions.mockReturnValue({
+      pending: [],
+      completed: [],
       loading: false,
-      remove: mockRemove,
-      update: mockUpdate,
       refresh: mockRefresh,
-      page: 0,
-      hasMore: false,
-      nextPage: vi.fn(),
-      prevPage: vi.fn(),
+      completedPage: 0,
+      hasMoreCompleted: false,
+      nextCompletedPage: mockNextCompletedPage,
+      prevCompletedPage: mockPrevCompletedPage,
+      analyzingSessionId: null,
     });
     render(<Dashboard />);
-    expect(screen.getByText('No tasks recorded yet. Start capturing to begin.')).toBeInTheDocument();
+    expect(screen.getByText('No pending sessions. Start a capture to create one.')).toBeInTheDocument();
+    expect(screen.getByText('No completed sessions yet.')).toBeInTheDocument();
   });
 
-  it('renders task table when tasks exist', () => {
-    mockUseTasks.mockReturnValue({
-      tasks: [sampleTask, sampleTask2],
+  it('renders pending sessions with title and counts', () => {
+    mockUseSessions.mockReturnValue({
+      pending: [pendingSession],
+      completed: [],
       loading: false,
-      remove: mockRemove,
-      update: mockUpdate,
       refresh: mockRefresh,
-      page: 0,
-      hasMore: false,
-      nextPage: vi.fn(),
-      prevPage: vi.fn(),
+      completedPage: 0,
+      hasMoreCompleted: false,
+      nextCompletedPage: mockNextCompletedPage,
+      prevCompletedPage: mockPrevCompletedPage,
+      analyzingSessionId: null,
     });
     render(<Dashboard />);
-    expect(screen.getByText('Test Task')).toBeInTheDocument();
-    expect(screen.getByText('Another Task')).toBeInTheDocument();
-    expect(screen.getByText('coding')).toBeInTheDocument();
-    expect(screen.getByText('browsing')).toBeInTheDocument();
+    expect(screen.getByText('Auth Feature')).toBeInTheDocument();
+    expect(screen.getByText('Working on auth')).toBeInTheDocument();
+    expect(screen.getByText('5 screenshots')).toBeInTheDocument();
+    expect(screen.getByText('3 unanalyzed')).toBeInTheDocument();
+    expect(screen.getByText('Analyze')).toBeInTheDocument();
   });
 
-  it('calls remove when delete button clicked', async () => {
+  it('renders completed sessions', () => {
+    mockUseSessions.mockReturnValue({
+      pending: [],
+      completed: [completedSession],
+      loading: false,
+      refresh: mockRefresh,
+      completedPage: 0,
+      hasMoreCompleted: false,
+      nextCompletedPage: mockNextCompletedPage,
+      prevCompletedPage: mockPrevCompletedPage,
+      analyzingSessionId: null,
+    });
+    render(<Dashboard />);
+    expect(screen.getByText('Testing Sprint')).toBeInTheDocument();
+    expect(screen.getByText('10 screenshots')).toBeInTheDocument();
+  });
+
+  it('calls analyzeSession when Analyze button clicked', async () => {
     const user = userEvent.setup();
-    mockUseTasks.mockReturnValue({
-      tasks: [sampleTask],
+    mockAnalyzeSession.mockResolvedValue(3);
+    mockUseSessions.mockReturnValue({
+      pending: [pendingSession],
+      completed: [],
       loading: false,
-      remove: mockRemove,
-      update: mockUpdate,
       refresh: mockRefresh,
-      page: 0,
-      hasMore: false,
-      nextPage: vi.fn(),
-      prevPage: vi.fn(),
+      completedPage: 0,
+      hasMoreCompleted: false,
+      nextCompletedPage: mockNextCompletedPage,
+      prevCompletedPage: mockPrevCompletedPage,
+      analyzingSessionId: null,
     });
     render(<Dashboard />);
-    const deleteButton = screen.getByText('Delete');
-    await user.click(deleteButton);
-    expect(mockRemove).toHaveBeenCalledWith(1);
-  });
-
-  it('opens TaskDetail when a task row is clicked', async () => {
-    const user = userEvent.setup();
-    mockUseTasks.mockReturnValue({
-      tasks: [sampleTask],
-      loading: false,
-      remove: mockRemove,
-      update: mockUpdate,
-      refresh: mockRefresh,
-      page: 0,
-      hasMore: false,
-      nextPage: vi.fn(),
-      prevPage: vi.fn(),
-    });
-    render(<Dashboard />);
-    const taskTitle = screen.getByText('Test Task');
-    await user.click(taskTitle);
-    // After clicking, TaskDetail should be rendered (we'll check for back button)
+    await user.click(screen.getByText('Analyze'));
     await waitFor(() => {
-      expect(screen.getByText('Back to Tasks')).toBeInTheDocument();
+      expect(mockAnalyzeSession).toHaveBeenCalledWith(1);
     });
-  });
-
-  it('renders pagination controls', () => {
-    const mockNextPage = vi.fn();
-    const mockPrevPage = vi.fn();
-    mockUseTasks.mockReturnValue({
-      tasks: [sampleTask],
-      loading: false,
-      remove: mockRemove,
-      update: mockUpdate,
-      refresh: mockRefresh,
-      page: 0,
-      hasMore: true,
-      nextPage: mockNextPage,
-      prevPage: mockPrevPage,
-    });
-    render(<Dashboard />);
-    expect(screen.getByText('Page 1')).toBeInTheDocument();
-    expect(screen.getByText('Next')).toBeInTheDocument();
-    expect(screen.getByText('Previous')).toBeInTheDocument();
-  });
-
-  it('calls nextPage when Next button is clicked', async () => {
-    const user = userEvent.setup();
-    const mockNextPage = vi.fn();
-    mockUseTasks.mockReturnValue({
-      tasks: [sampleTask],
-      loading: false,
-      remove: mockRemove,
-      update: mockUpdate,
-      refresh: mockRefresh,
-      page: 0,
-      hasMore: true,
-      nextPage: mockNextPage,
-      prevPage: vi.fn(),
-    });
-    render(<Dashboard />);
-    await user.click(screen.getByText('Next'));
-    expect(mockNextPage).toHaveBeenCalled();
-  });
-
-  it('disables Previous button on first page', () => {
-    mockUseTasks.mockReturnValue({
-      tasks: [sampleTask],
-      loading: false,
-      remove: mockRemove,
-      update: mockUpdate,
-      refresh: mockRefresh,
-      page: 0,
-      hasMore: true,
-      nextPage: vi.fn(),
-      prevPage: vi.fn(),
-    });
-    render(<Dashboard />);
-    expect(screen.getByText('Previous')).toBeDisabled();
-  });
-
-  it('disables Next button when there are no more pages', () => {
-    mockUseTasks.mockReturnValue({
-      tasks: [sampleTask],
-      loading: false,
-      remove: mockRemove,
-      update: mockUpdate,
-      refresh: mockRefresh,
-      page: 0,
-      hasMore: false,
-      nextPage: vi.fn(),
-      prevPage: vi.fn(),
-    });
-    render(<Dashboard />);
-    expect(screen.getByText('Next')).toBeDisabled();
-  });
-
-  it('shows success message after analyzing pending screenshots', async () => {
-    const user = userEvent.setup();
-    mockAnalyzePending.mockResolvedValue(3);
-    mockUseTasks.mockReturnValue({
-      tasks: [sampleTask],
-      loading: false,
-      remove: mockRemove,
-      update: mockUpdate,
-      refresh: mockRefresh,
-      page: 0,
-      hasMore: false,
-      nextPage: vi.fn(),
-      prevPage: vi.fn(),
-    });
-    render(<Dashboard />);
-    await user.click(screen.getByText('Analyze Pending'));
     await waitFor(() => {
       expect(screen.getByText('Analyzed 3 screenshots')).toBeInTheDocument();
     });
   });
 
-  it('shows error message when analysis fails', async () => {
+  it('calls analyzeAllPending when Analyze All clicked', async () => {
     const user = userEvent.setup();
-    mockAnalyzePending.mockRejectedValue(new Error('No API key configured'));
-    mockUseTasks.mockReturnValue({
-      tasks: [sampleTask],
+    mockAnalyzeAllPending.mockResolvedValue(5);
+    mockUseSessions.mockReturnValue({
+      pending: [pendingSession],
+      completed: [],
       loading: false,
-      remove: mockRemove,
-      update: mockUpdate,
       refresh: mockRefresh,
-      page: 0,
-      hasMore: false,
-      nextPage: vi.fn(),
-      prevPage: vi.fn(),
+      completedPage: 0,
+      hasMoreCompleted: false,
+      nextCompletedPage: mockNextCompletedPage,
+      prevCompletedPage: mockPrevCompletedPage,
+      analyzingSessionId: null,
     });
     render(<Dashboard />);
-    await user.click(screen.getByText('Analyze Pending'));
+    await user.click(screen.getByText('Analyze All'));
+    await waitFor(() => {
+      expect(mockAnalyzeAllPending).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Analyzed 5 screenshots')).toBeInTheDocument();
+    });
+  });
+
+  it('shows error message when analysis fails', async () => {
+    const user = userEvent.setup();
+    mockAnalyzeSession.mockRejectedValue(new Error('No API key configured'));
+    mockUseSessions.mockReturnValue({
+      pending: [pendingSession],
+      completed: [],
+      loading: false,
+      refresh: mockRefresh,
+      completedPage: 0,
+      hasMoreCompleted: false,
+      nextCompletedPage: mockNextCompletedPage,
+      prevCompletedPage: mockPrevCompletedPage,
+      analyzingSessionId: null,
+    });
+    render(<Dashboard />);
+    await user.click(screen.getByText('Analyze'));
     await waitFor(() => {
       expect(screen.getByText('Error: No API key configured')).toBeInTheDocument();
     });
+  });
+
+  it('opens CollectionDetail when completed session is clicked', async () => {
+    const user = userEvent.setup();
+    mockUseSessions.mockReturnValue({
+      pending: [],
+      completed: [completedSession],
+      loading: false,
+      refresh: mockRefresh,
+      completedPage: 0,
+      hasMoreCompleted: false,
+      nextCompletedPage: mockNextCompletedPage,
+      prevCompletedPage: mockPrevCompletedPage,
+      analyzingSessionId: null,
+    });
+    render(<Dashboard />);
+    await user.click(screen.getByText('Testing Sprint'));
+    expect(screen.getByTestId('collection-detail')).toBeInTheDocument();
+    expect(screen.getByText('Back to Sessions')).toBeInTheDocument();
+  });
+
+  it('renders pagination for completed sessions', () => {
+    mockUseSessions.mockReturnValue({
+      pending: [],
+      completed: [completedSession],
+      loading: false,
+      refresh: mockRefresh,
+      completedPage: 1,
+      hasMoreCompleted: true,
+      nextCompletedPage: mockNextCompletedPage,
+      prevCompletedPage: mockPrevCompletedPage,
+      analyzingSessionId: null,
+    });
+    render(<Dashboard />);
+    expect(screen.getByText('Page 2')).toBeInTheDocument();
+    expect(screen.getByText('Previous')).not.toBeDisabled();
+    expect(screen.getByText('Next')).not.toBeDisabled();
   });
 });

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { getSetting, updateSetting, getLogPath, ensureOllama, checkOllama, ollamaPull } from "../lib/tauri";
+import { getSetting, updateSetting, getLogPath, ensureOllama, checkOllama, ollamaPull, getMonitors, highlightMonitors } from "../lib/tauri";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
-import type { OllamaStatus } from "../types";
+import type { MonitorInfo, OllamaStatus } from "../types";
 
 export function Settings() {
   const [provider, setProvider] = useState<"ollama" | "claude">("claude");
@@ -11,6 +11,11 @@ export function Settings() {
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [pullingModel, setPullingModel] = useState(false);
   const [imageMode, setImageMode] = useState<"downscale" | "active_window">("downscale");
+  const [analysisMode, setAnalysisMode] = useState<"realtime" | "batch">("batch");
+  const [batchSize, setBatchSize] = useState(10);
+  const [monitorMode, setMonitorMode] = useState<"default" | "specific" | "active" | "all">("default");
+  const [monitorId, setMonitorId] = useState<string>("");
+  const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
@@ -26,6 +31,23 @@ export function Settings() {
     getSetting("image_mode").then((val) => {
       if (val === "downscale" || val === "active_window") setImageMode(val);
     });
+    getSetting("analysis_mode").then((val) => {
+      if (val === "realtime" || val === "batch") setAnalysisMode(val);
+    });
+    getSetting("batch_size").then((val) => {
+      if (val) {
+        const n = parseInt(val, 10);
+        if (n >= 1 && n <= 100) setBatchSize(n);
+      }
+    });
+    getSetting("capture_monitor_mode").then((val) => {
+      if (val === "default" || val === "specific" || val === "active" || val === "all")
+        setMonitorMode(val);
+    });
+    getSetting("capture_monitor_id").then((val) => {
+      if (val) setMonitorId(val);
+    });
+    refreshMonitors();
   }, []);
 
   useEffect(() => {
@@ -67,9 +89,35 @@ export function Settings() {
     setPullingModel(false);
   };
 
+  const refreshMonitors = async () => {
+    try {
+      const list = await getMonitors();
+      setMonitors(list);
+    } catch {
+      setMonitors([]);
+    }
+  };
+
+  const formatMonitorName = (m: MonitorInfo, index: number) => {
+    // Strip Windows device path prefix (\\.\)
+    let label = m.name.replace(/^\\\\\.\\/i, "");
+    // Add a human-readable number prefix
+    label = `Monitor ${index + 1}: ${label}`;
+    // Add resolution
+    label += ` (${m.width}x${m.height})`;
+    if (m.is_primary) label += " — Primary";
+    return label;
+  };
+
   const save = async () => {
     await updateSetting("ai_provider", provider);
     await updateSetting("image_mode", imageMode);
+    await updateSetting("analysis_mode", analysisMode);
+    await updateSetting("batch_size", String(batchSize));
+    await updateSetting("capture_monitor_mode", monitorMode);
+    if (monitorMode === "specific" && monitorId) {
+      await updateSetting("capture_monitor_id", monitorId);
+    }
     if (provider === "claude") {
       await updateSetting("ai_api_key", apiKey);
     } else {
@@ -179,6 +227,73 @@ export function Settings() {
       )}
 
       <fieldset className="provider-selector">
+        <legend>Monitor</legend>
+        <label className="radio-label">
+          <input
+            type="radio"
+            name="monitor_mode"
+            value="default"
+            checked={monitorMode === "default"}
+            onChange={() => { setMonitorMode("default"); highlightMonitors("default").catch(() => {}); }}
+          />
+          Default (primary monitor)
+        </label>
+        <label className="radio-label">
+          <input
+            type="radio"
+            name="monitor_mode"
+            value="active"
+            checked={monitorMode === "active"}
+            onChange={() => { setMonitorMode("active"); highlightMonitors("active").catch(() => {}); }}
+          />
+          Active (follows cursor)
+        </label>
+        <label className="radio-label">
+          <input
+            type="radio"
+            name="monitor_mode"
+            value="all"
+            checked={monitorMode === "all"}
+            onChange={() => { setMonitorMode("all"); highlightMonitors("all").catch(() => {}); }}
+          />
+          All monitors
+        </label>
+        <label className="radio-label">
+          <input
+            type="radio"
+            name="monitor_mode"
+            value="specific"
+            checked={monitorMode === "specific"}
+            onChange={() => setMonitorMode("specific")}
+          />
+          Specific monitor
+        </label>
+        {monitorMode === "specific" && (
+          <div style={{ marginLeft: "1.5rem", marginTop: "0.5rem" }}>
+            <select
+              value={monitorId}
+              onChange={(e) => { setMonitorId(e.target.value); if (e.target.value) highlightMonitors("specific", Number(e.target.value)).catch(() => {}); }}
+            >
+              <option value="">Select a monitor...</option>
+              {monitors.map((m, i) => (
+                <option key={m.id} value={String(m.id)}>
+                  {formatMonitorName(m, i)}
+                </option>
+              ))}
+            </select>
+            <button className="check-button" onClick={refreshMonitors} style={{ marginLeft: "0.5rem" }}>
+              Refresh
+            </button>
+          </div>
+        )}
+        {monitors.length > 0 && monitorMode !== "specific" && (
+          <div style={{ fontSize: "0.85em", opacity: 0.7, marginTop: "0.25rem" }}>
+            {monitors.map((m, i) => formatMonitorName(m, i)).join(" | ")}
+          </div>
+        )}
+      </fieldset>
+
+      <fieldset className="provider-selector">
         <legend>Image Mode</legend>
         <label className="radio-label">
           <input
@@ -200,6 +315,45 @@ export function Settings() {
           />
           Active window only
         </label>
+      </fieldset>
+
+      <fieldset className="provider-selector">
+        <legend>Analysis Mode</legend>
+        <label className="radio-label">
+          <input
+            type="radio"
+            name="analysis_mode"
+            value="realtime"
+            checked={analysisMode === "realtime"}
+            onChange={() => setAnalysisMode("realtime")}
+          />
+          Real-time (analyze each screenshot immediately)
+        </label>
+        <label className="radio-label">
+          <input
+            type="radio"
+            name="analysis_mode"
+            value="batch"
+            checked={analysisMode === "batch"}
+            onChange={() => setAnalysisMode("batch")}
+          />
+          Batch
+        </label>
+        {analysisMode === "batch" && (
+          <label>
+            Batch size:
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={batchSize}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10);
+                if (!isNaN(n)) setBatchSize(Math.max(1, Math.min(100, n)));
+              }}
+            />
+          </label>
+        )}
       </fieldset>
 
       <button onClick={save}>Save</button>

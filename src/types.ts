@@ -4,6 +4,17 @@ export interface Screenshot {
   captured_at: string;
   active_window_title: string | null;
   monitor_index: number;
+  capture_group: string | null;
+}
+
+export interface MonitorInfo {
+  id: number;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  is_primary: boolean;
 }
 
 export interface Task {
@@ -18,18 +29,12 @@ export interface Task {
   metadata: string | null;
 }
 
-export interface TaskUpdate {
-  title?: string;
-  description?: string;
-  category?: string;
-  ended_at?: string;
-  user_verified?: boolean;
-}
-
 export interface CaptureStatus {
   active: boolean;
   interval_ms: number;
   count: number;
+  monitor_mode: string;
+  monitors_captured: number;
 }
 
 export interface CaptureSession {
@@ -38,10 +43,17 @@ export interface CaptureSession {
   ended_at: string | null;
   screenshot_count: number;
   description: string | null;
+  title: string | null;
+  unanalyzed_count: number;
 }
 
 export interface OllamaStatus {
   available: boolean;
   models: string[];
   source: string;
+}
+
+export interface AnalysisStatus {
+  analyzing: boolean;
+  session_id: number | null;
 }

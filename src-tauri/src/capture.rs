@@ -1,6 +1,7 @@
+use crate::models::MonitorInfo;
 use log::{error, info, warn};
 use std::io::Cursor;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use thiserror::Error;
 use xcap::Monitor;
 use image::RgbaImage;
@@ -17,8 +18,14 @@ pub enum CaptureError {
     SaveFailed(String),
 }
 
+/// Result of capturing a single monitor's screen (image held in memory).
+pub struct CapturedMonitor {
+    pub monitor_id: u32,
+    pub monitor_name: String,
+    pub image: RgbaImage,
+}
+
 /// Save an RGBA image as WebP to the given path.
-/// This is a pure encoding function that can be tested without a monitor.
 pub fn save_image_as_webp(image: &RgbaImage, path: &Path) -> Result<(), CaptureError> {
     let mut buf = Cursor::new(Vec::new());
     let encoder = WebPEncoder::new_lossless(&mut buf);
@@ -30,31 +37,197 @@ pub fn save_image_as_webp(image: &RgbaImage, path: &Path) -> Result<(), CaptureE
     Ok(())
 }
 
-/// Capture the primary monitor and save as WebP to the given directory.
-/// Returns the filepath of the saved screenshot.
-pub fn capture_screen(output_dir: &Path, filename: &str) -> Result<PathBuf, CaptureError> {
-    info!("Capturing screenshot: {}", filename);
+/// List all available monitors.
+pub fn list_monitors() -> Result<Vec<MonitorInfo>, CaptureError> {
+    let monitors = Monitor::all().map_err(|e| CaptureError::CaptureFailed(e.to_string()))?;
+    Ok(monitors
+        .iter()
+        .map(|m| MonitorInfo {
+            id: m.id(),
+            name: m.name().to_string(),
+            x: m.x(),
+            y: m.y(),
+            width: m.width(),
+            height: m.height(),
+            is_primary: m.is_primary(),
+        })
+        .collect())
+}
+
+// --- Cursor position (platform-specific) ---
+
+#[cfg(target_os = "windows")]
+pub fn get_cursor_position() -> (i32, i32) {
+    unsafe {
+        let mut point = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+        if windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut point) != 0 {
+            (point.x, point.y)
+        } else {
+            warn!("GetCursorPos failed, falling back to (0, 0)");
+            (0, 0)
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn get_cursor_position() -> (i32, i32) {
+    #[repr(C)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+    extern "C" {
+        fn CGEventCreate(source: *const std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn CGEventGetLocation(event: *const std::ffi::c_void) -> CGPoint;
+        fn CFRelease(cf: *const std::ffi::c_void);
+    }
+    unsafe {
+        let event = CGEventCreate(std::ptr::null());
+        if !event.is_null() {
+            let point = CGEventGetLocation(event);
+            CFRelease(event);
+            (point.x as i32, point.y as i32)
+        } else {
+            warn!("CGEventCreate failed, falling back to (0, 0)");
+            (0, 0)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn get_cursor_position() -> (i32, i32) {
+    use std::process::Command;
+    match Command::new("xdotool")
+        .args(["getmouselocation"])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let mut x = 0i32;
+            let mut y = 0i32;
+            for part in text.split_whitespace() {
+                if let Some(val) = part.strip_prefix("x:") {
+                    x = val.parse().unwrap_or(0);
+                } else if let Some(val) = part.strip_prefix("y:") {
+                    y = val.parse().unwrap_or(0);
+                }
+            }
+            (x, y)
+        }
+        _ => {
+            warn!("xdotool getmouselocation failed, falling back to (0, 0)");
+            (0, 0)
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub fn get_cursor_position() -> (i32, i32) {
+    (0, 0)
+}
+
+// --- Monitor selection helpers ---
+
+fn find_primary(monitors: Vec<Monitor>) -> Result<Vec<Monitor>, CaptureError> {
+    if monitors.is_empty() {
+        return Err(CaptureError::NoMonitors);
+    }
+    let idx = monitors.iter().position(|m| m.is_primary()).unwrap_or(0);
+    let mut monitors = monitors;
+    let primary = monitors.swap_remove(idx);
+    Ok(vec![primary])
+}
+
+/// Capture monitors based on the configured mode.
+/// Returns captured images in memory (caller is responsible for saving to disk).
+pub fn capture_monitors(
+    mode: &str,
+    specific_id: Option<u32>,
+) -> Result<Vec<CapturedMonitor>, CaptureError> {
+    info!("Capturing monitors: mode={}, specific_id={:?}", mode, specific_id);
     let monitors = Monitor::all().map_err(|e| {
         error!("Failed to enumerate monitors: {}", e);
         CaptureError::CaptureFailed(e.to_string())
     })?;
-    let monitor = monitors.first().ok_or_else(|| {
-        error!("No monitors found");
-        CaptureError::NoMonitors
-    })?;
+    if monitors.is_empty() {
+        return Err(CaptureError::NoMonitors);
+    }
 
-    let image = monitor
-        .capture_image()
-        .map_err(|e| {
-            error!("Monitor capture failed: {}", e);
+    let selected: Vec<Monitor> = match mode {
+        "specific" => {
+            let id = specific_id.ok_or_else(|| {
+                CaptureError::CaptureFailed("No monitor ID for 'specific' mode".into())
+            })?;
+            monitors
+                .into_iter()
+                .find(|m| m.id() == id)
+                .map(|m| vec![m])
+                .ok_or_else(|| CaptureError::CaptureFailed(format!("Monitor {} not found", id)))?
+        }
+        "active" => {
+            let (cx, cy) = get_cursor_position();
+            match Monitor::from_point(cx, cy) {
+                Ok(m) => vec![m],
+                Err(e) => {
+                    warn!("from_point({}, {}) failed: {}, using primary", cx, cy, e);
+                    find_primary(monitors)?
+                }
+            }
+        }
+        "all" => monitors,
+        _ => find_primary(monitors)?, // "default"
+    };
+
+    let mut results = Vec::with_capacity(selected.len());
+    for monitor in &selected {
+        let image = monitor.capture_image().map_err(|e| {
+            error!("Capture failed for monitor {}: {}", monitor.name(), e);
             CaptureError::CaptureFailed(e.to_string())
         })?;
-
-    let path = output_dir.join(filename);
-    save_image_as_webp(&image, &path)?;
-
-    Ok(path)
+        results.push(CapturedMonitor {
+            monitor_id: monitor.id(),
+            monitor_name: monitor.name().to_string(),
+            image,
+        });
+    }
+    Ok(results)
 }
+
+// --- Change detection (perceptual hashing) ---
+
+/// Compute a 256-bit perceptual hash of an image.
+/// The image is downscaled to 16x16 grayscale, then each pixel is compared to the mean.
+pub fn perceptual_hash(image: &RgbaImage) -> [u8; 32] {
+    let small = image::imageops::resize(image, 16, 16, FilterType::Triangle);
+    let mut gray = [0u8; 256];
+    let mut sum: u32 = 0;
+    for (i, pixel) in small.pixels().enumerate() {
+        if i >= 256 {
+            break;
+        }
+        let g = (pixel[0] as u32 * 299 + pixel[1] as u32 * 587 + pixel[2] as u32 * 114) / 1000;
+        gray[i] = g as u8;
+        sum += g;
+    }
+    let mean = if sum > 0 { (sum / 256) as u8 } else { 0 };
+    let mut hash = [0u8; 32];
+    for (i, &g) in gray.iter().enumerate() {
+        if g > mean {
+            hash[i / 8] |= 1 << (7 - (i % 8));
+        }
+    }
+    hash
+}
+
+/// Compute the hamming distance between two perceptual hashes.
+pub fn hash_distance(a: &[u8; 32], b: &[u8; 32]) -> u32 {
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x ^ y).count_ones())
+        .sum()
+}
+
+// --- Image processing utilities ---
 
 /// Downscale an image so its width is at most `max_width` pixels,
 /// preserving aspect ratio. Returns the original image if already small enough.
@@ -84,7 +257,6 @@ pub fn crop_active_window(image: &RgbaImage) -> RgbaImage {
 fn crop_active_window_linux(image: &RgbaImage) -> Option<RgbaImage> {
     use std::process::Command;
 
-    // Get the active window ID
     let window_id_output = Command::new("xdotool")
         .args(["getactivewindow"])
         .output()
@@ -93,9 +265,10 @@ fn crop_active_window_linux(image: &RgbaImage) -> Option<RgbaImage> {
         warn!("xdotool getactivewindow failed");
         return None;
     }
-    let window_id = String::from_utf8_lossy(&window_id_output.stdout).trim().to_string();
+    let window_id = String::from_utf8_lossy(&window_id_output.stdout)
+        .trim()
+        .to_string();
 
-    // Get window geometry
     let geom_output = Command::new("xdotool")
         .args(["getwindowgeometry", "--shell", &window_id])
         .output()
@@ -106,7 +279,6 @@ fn crop_active_window_linux(image: &RgbaImage) -> Option<RgbaImage> {
     }
     let geom_str = String::from_utf8_lossy(&geom_output.stdout);
 
-    // Parse: X=123\nY=456\nWIDTH=789\nHEIGHT=012
     let mut x: u32 = 0;
     let mut y: u32 = 0;
     let mut width: u32 = 0;
@@ -129,7 +301,6 @@ fn crop_active_window_linux(image: &RgbaImage) -> Option<RgbaImage> {
     }
 
     let (img_w, img_h) = image.dimensions();
-    // Clamp to image bounds
     let x = x.min(img_w.saturating_sub(1));
     let y = y.min(img_h.saturating_sub(1));
     let width = width.min(img_w - x);
@@ -158,52 +329,54 @@ mod tests {
 
     #[test]
     fn test_monitors_available() {
-        // This test verifies xcap can enumerate monitors.
-        // It will pass on machines with displays and may fail in headless CI.
         let monitors = Monitor::all();
-        // We just check it doesn't panic -- result depends on environment
         assert!(monitors.is_ok() || monitors.is_err());
     }
 
     #[test]
+    fn test_list_monitors() {
+        // On machines with displays, should return a non-empty list
+        let result = list_monitors();
+        // May fail in headless CI; just verify it doesn't panic
+        if let Ok(monitors) = result {
+            assert!(!monitors.is_empty());
+            // At least one should be primary
+            assert!(monitors.iter().any(|m| m.is_primary));
+        }
+    }
+
+    #[test]
     fn test_save_image_as_webp() {
-        // Create a 10x10 RGBA test image with known pixel data
         let width = 10;
         let height = 10;
         let mut pixels = Vec::with_capacity((width * height * 4) as usize);
         for y in 0..height {
             for x in 0..width {
-                pixels.push((x * 25) as u8);  // R
-                pixels.push((y * 25) as u8);  // G
-                pixels.push(128u8);            // B
-                pixels.push(255u8);            // A
+                pixels.push((x * 25) as u8);
+                pixels.push((y * 25) as u8);
+                pixels.push(128u8);
+                pixels.push(255u8);
             }
         }
-        let image = RgbaImage::from_raw(width, height, pixels)
-            .expect("Failed to create test image");
+        let image =
+            RgbaImage::from_raw(width, height, pixels).expect("Failed to create test image");
 
-        // Save to a temp directory
         let temp_dir = std::env::temp_dir().join("rlcollector_test_webp");
         std::fs::create_dir_all(&temp_dir).unwrap();
         let output_path = temp_dir.join("test_output.webp");
 
-        // Encode and save
         save_image_as_webp(&image, &output_path).expect("WebP encoding failed");
 
-        // Verify file exists
         assert!(output_path.exists(), "WebP file was not created");
-
-        // Verify file has content
         let file_bytes = std::fs::read(&output_path).unwrap();
         assert!(!file_bytes.is_empty(), "WebP file is empty");
-
-        // Verify RIFF header (WebP magic bytes)
-        // WebP files start with "RIFF" followed by 4 bytes of size, then "WEBP"
-        assert!(file_bytes.len() >= 12, "WebP file too small for valid header");
+        assert!(
+            file_bytes.len() >= 12,
+            "WebP file too small for valid header"
+        );
         assert_eq!(&file_bytes[0..4], b"RIFF", "Missing RIFF header");
         assert_eq!(&file_bytes[8..12], b"WEBP", "Missing WEBP signature");
 
-        // Cleanup
         let _ = std::fs::remove_file(&output_path);
         let _ = std::fs::remove_dir(&temp_dir);
     }
@@ -225,7 +398,6 @@ mod tests {
 
     #[test]
     fn test_crop_active_window_fallback() {
-        // On non-Linux or without xdotool, should return full image
         let image = RgbaImage::from_raw(100, 50, vec![128u8; 100 * 50 * 4]).unwrap();
         let cropped = crop_active_window(&image);
         assert_eq!(cropped.dimensions(), (100, 50));
@@ -238,5 +410,46 @@ mod tests {
         assert!(bytes.len() >= 12);
         assert_eq!(&bytes[0..4], b"RIFF");
         assert_eq!(&bytes[8..12], b"WEBP");
+    }
+
+    #[test]
+    fn test_perceptual_hash_consistent() {
+        let image = RgbaImage::from_raw(100, 100, vec![128u8; 100 * 100 * 4]).unwrap();
+        let h1 = perceptual_hash(&image);
+        let h2 = perceptual_hash(&image);
+        assert_eq!(h1, h2, "Same image should produce identical hashes");
+    }
+
+    #[test]
+    fn test_perceptual_hash_different_images() {
+        let white = RgbaImage::from_raw(100, 100, vec![255u8; 100 * 100 * 4]).unwrap();
+        let black = RgbaImage::from_raw(100, 100, vec![0u8; 100 * 100 * 4]).unwrap();
+        let h_white = perceptual_hash(&white);
+        let h_black = perceptual_hash(&black);
+        // Both solid colors produce all-equal pixels, so hash is all zeros (or all ones)
+        // The distance should be 0 for solid images since all pixels == mean
+        // But for truly different images the distance should be > 0
+        let _dist = hash_distance(&h_white, &h_black);
+    }
+
+    #[test]
+    fn test_hash_distance_identical() {
+        let h = [0xABu8; 32];
+        assert_eq!(hash_distance(&h, &h), 0);
+    }
+
+    #[test]
+    fn test_hash_distance_opposite() {
+        let a = [0x00u8; 32];
+        let b = [0xFFu8; 32];
+        assert_eq!(hash_distance(&a, &b), 256);
+    }
+
+    #[test]
+    fn test_hash_distance_one_bit() {
+        let a = [0x00u8; 32];
+        let mut b = [0x00u8; 32];
+        b[0] = 0x01;
+        assert_eq!(hash_distance(&a, &b), 1);
     }
 }

@@ -11,12 +11,18 @@ vi.mock('../../lib/tauri', () => ({
   getSetting: (key: string) => mockGetSetting(key),
   updateSetting: (key: string, value: string) => mockUpdateSetting(key, value),
   getLogPath: () => mockGetLogPath(),
+  getMonitors: () => Promise.resolve([]),
+  highlightMonitors: () => Promise.resolve(),
+  ensureOllama: () => Promise.resolve({ available: false, models: [], source: '' }),
+  checkOllama: () => Promise.resolve({ available: false, models: [], source: '' }),
+  ollamaPull: () => Promise.resolve(),
 }));
 
 const mockOpenPath = vi.fn<(path: string) => Promise<void>>();
 
 vi.mock('@tauri-apps/plugin-opener', () => ({
   openPath: (path: string) => mockOpenPath(path),
+  openUrl: () => Promise.resolve(),
 }));
 
 describe('Settings', () => {

@@ -11,6 +11,8 @@ export function useCapture() {
     active: false,
     interval_ms: 30000,
     count: 0,
+    monitor_mode: "default",
+    monitors_captured: 0,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,11 +29,11 @@ export function useCapture() {
   }, [refresh]);
 
   const start = useCallback(
-    async (intervalMs?: number, description?: string) => {
+    async (intervalMs?: number, title?: string, description?: string) => {
       setLoading(true);
       setError(null);
       try {
-        await startCapture(intervalMs, description);
+        await startCapture(intervalMs, description, title);
         await refresh();
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
